@@ -114,6 +114,8 @@ function getPageType() {
 function findCarCards() {
   // Candidate selectors — common patterns across dealership sites
   const candidateSelectors = [
+    // Cars.com — uses fuse-card web components with JSON data
+    'fuse-card[data-listing-id]',
     // Generic card patterns
     '[class*="vehicle-card"]',
     '[class*="car-card"]',
@@ -122,18 +124,15 @@ function findCarCards() {
     '[class*="result-item"]',
     '[class*="vehicle-item"]',
     '[class*="search-result"]',
-    // Cars.com
-    'cars-listing-card',
-    '[data-qa="searchResultItem"]',
     // CarGurus
     '[data-cg-ft="srp-listing-blade"]',
     // AutoTrader
     '[data-qaid="cntnr-lstng-tile"]',
-    // Generic grid/list items that might be car cards
+    // Generic
     '.inventory-listing',
     '.vehicle-listing',
     '.car-listing',
-  ];
+];
 
   let bestCards = [];
 
@@ -215,23 +214,63 @@ function findRepeatedCarElements() {
  * or from the full page (single listing page).
  */
 function scrapeVehicleFromCard(card) {
-  const text = card.innerText || "";
+    // Cars.com — use structured JSON data
+    if (card.tagName.toLowerCase() === 'fuse-card') {
+        const carsData = scrapeCarsDotCom(card);
+        if (carsData) return carsData;
+    }
 
-  return {
-    vin:         extractVIN(text) || extractVIN(document.body.innerText),
-    year:        extractYear(text),
-    make:        extractMake(text),
-    model:       extractModel(card),
-    trim:        extractTrim(card),
-    price:       extractPrice(text),
-    mileage:     extractMileage(text),
-    photos:      extractPhotosFromCard(card),
-    listing_url: extractListingUrl(card),
-    source_url:  window.location.href,
-    scraped_at:  new Date().toISOString(),
-  };
+    // Generic scraper for all other sites
+    const text = card.innerText || "";
+    return {
+        vin:         extractVIN(text) || extractVIN(document.body.innerText),
+        year:        extractYear(text),
+        make:        extractMake(text),
+        model:       extractModel(card),
+        trim:        extractTrim(card),
+        price:       extractPrice(text),
+        mileage:     extractMileage(text),
+        photos:      extractPhotosFromCard(card),
+        listing_url: extractListingUrl(card),
+        source_url:  window.location.href,
+        scraped_at:  new Date().toISOString(),
+    };
 }
 
+/**
+ * Cars.com specific scraper — reads JSON from data-vehicle-details attribute
+ */
+function scrapeCarsDotCom(card) {
+    try {
+        const raw = card.getAttribute('data-vehicle-details');
+        if (!raw) return null;
+        
+        const data = JSON.parse(raw);
+        
+        // Extract listing URL from the parent LI
+        const li = card.closest('li');
+        const link = li?.querySelector('a[href*="/vehicledetail/"]');
+        const href = link?.getAttribute('href') || '';
+        const listingUrl = href.startsWith('http') ? 
+          href : 
+          'https://www.cars.com' + href;
+        return {
+            vin:         data.vin || null,
+            year:        data.year?.toString() || null,
+            make:        data.make || null,
+            model:       data.model || null,
+            trim:        data.trim || null,
+            price:       data.price ? '$' + data.price.toLocaleString() : null,
+            mileage:     data.mileage ? data.mileage.toLocaleString() + ' mi' : null,
+            photos:      extractPhotosFromCard(card),
+            listing_url: listingUrl,
+            source_url:  window.location.href,
+            scraped_at:  new Date().toISOString(),
+        };
+    } catch (e) {
+        return null;
+    }
+}
 
 function scrapeVehicleFromPage() {
   const text = document.body.innerText || "";

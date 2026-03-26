@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "OrbitAds — Vehicle Importer",
+  "version": "1.0.0",
+  "description": "Import vehicle listings and generate AI video ads directly from any dealership website.",
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "OrbitAds"
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*/*/inventory*",
+        "*://*/*/vehicle*",
+        "*://*/*/listing*",
+        "*://*/*/used*",
+        "*://*/*/new*",
+        "*://*/*/certified*",
+        "*://*/*/cars*",
+        "*://www.cars.com/*",
+        "*://www.cargurus.com/*",
+        "*://www.autotrader.com/*",
+        "*://www.carmax.com/*",
+        "*://www.dealertrack.com/*"
+      ],
+      "js": ["content_script.js"],
+      "css": ["content_script.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "*://*/*",
+    "http://localhost:8000/*",
+    "https://api.dealersorbit.com/*"
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*", "popup/*"],
+      "matches": ["*://*/*"]
+    }
+  ]
+}

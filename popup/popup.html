@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OrbitAds</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- ── Header ───────────────────────────────────────── -->
+  <header class="header">
+    <div class="logo">
+      <span class="logo-orbit">Orbit</span><span class="logo-ads">Ads</span>
+    </div>
+    <div class="user-info" id="userInfo" style="display:none">
+      <span id="userName"></span>
+      <button class="btn-link" id="logoutBtn">Sign out</button>
+    </div>
+  </header>
+
+  <!-- ── Login screen ─────────────────────────────────── -->
+  <div class="screen" id="loginScreen">
+    <p class="screen-subtitle">Sign in to start generating ads</p>
+
+    <div class="form-group">
+      <label for="email">Email</label>
+      <input type="email" id="email" placeholder="you@dealership.com" autocomplete="email">
+    </div>
+
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+
+    <div class="error-msg" id="loginError"></div>
+
+    <button class="btn-primary" id="loginBtn">Sign In</button>
+
+    <p class="screen-hint">
+      Don't have an account? 
+      <a href="https://dealersorbit.com" target="_blank">Sign up at dealersorbit.com</a>
+    </p>
+  </div>
+
+  <!-- ── Empty state ───────────────────────────────────── -->
+  <div class="screen" id="emptyScreen" style="display:none">
+    <div class="empty-icon">🚗</div>
+    <p class="empty-title">No vehicles in queue</p>
+    <p class="empty-hint">
+      Browse your dealership inventory and click
+      <strong>⊕ Import to OrbitAds</strong> on any vehicle to get started.
+    </p>
+  </div>
+
+  <!-- ── Queue screen ─────────────────────────────────── -->
+  <div class="screen" id="queueScreen" style="display:none">
+    <div class="queue-header">
+      <span id="queueCount"></span>
+      <button class="btn-link" id="clearDoneBtn">Clear completed</button>
+    </div>
+    <div id="jobList"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

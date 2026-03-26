@@ -1,3 +1,4 @@
+
 /**
  * OrbitAds Content Script
  * ────────────────────────
@@ -36,6 +37,15 @@ const CAR_MAKES = [
   "volkswagen","volvo","vw",
 ];
 
+// Get config for current domain from background script
+async function getDealershipConfig() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: "GET_CONFIG", domain: window.location.hostname },
+      (response) => resolve(response?.config || null)
+    );
+  });
+}
 
 // ── Page detection ────────────────────────────────────────────
 /**
@@ -288,6 +298,89 @@ function scrapeVehicleFromPage() {
     source_url:  window.location.href,
     scraped_at:  new Date().toISOString(),
   };
+}
+
+// ── Config-driven scraping (for dealership sites) ─────────────────
+function scrapeWithConfig(card, config) {
+  const ext = config.inventory_page.extractors;
+  const getText = (sel) => card.querySelector(sel)?.innerText?.trim() || null;
+  const getAttr = (sel, attr) => card.querySelector(sel)?.getAttribute(attr) || 
+                                  card.getAttribute(attr) || null;
+
+  // Get photos — strip query params for full resolution
+  const photoEls = Array.from(card.querySelectorAll(ext.photos.selector));
+  const photos = [...new Set(
+    photoEls
+      .map(img => (img.src || img.dataset.src || '').replace(/\?.*$/, ''))
+      .filter(src => src && src.startsWith('http'))
+  )].slice(0, 8);
+
+  // Get mileage — filter for the one containing "miles" or "mi"
+  const mileageEls = Array.from(card.querySelectorAll(ext.mileage.selector));
+  const mileage = mileageEls
+    .find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
+
+  // Get link
+  const linkEl = card.querySelector(ext.link.selector);
+  const href = linkEl?.getAttribute('href') || '';
+  const listingUrl = href.startsWith('http') ? href :
+    window.location.origin + href;
+
+  return {
+    vin:         getAttr(ext.vin.selector, ext.vin.attribute),
+    year:        extractYear(getText(ext.title.selector) || ''),
+    make:        extractMake(getText(ext.title.selector) || ''),
+    model:       extractModel(card),
+    trim:        extractTrim(card),
+    price:       getText(ext.price.selector),
+    mileage:     mileage,
+    photos:      photos,
+    listing_url: listingUrl,
+    source_url:  window.location.href,
+    dealership:  config.dealership_name,
+    scraped_at:  new Date().toISOString(),
+  };
+}
+
+function injectConfigDrivenButtons(cards, config) {
+  cards.forEach(card => {
+    if (card.querySelector(`.${BUTTON_CLASS}`)) return;
+    const vehicleData = scrapeWithConfig(card, config);
+    if (!vehicleData.vin && !vehicleData.price) return;
+    const btn = createImportButton(vehicleData);
+    card.setAttribute(INJECTED_ATTR, "true");
+    const footer = card.querySelector('[class*="footer"],[class*="actions"],[class*="price"]');
+    if (footer) footer.appendChild(btn);
+    else card.appendChild(btn);
+  });
+}
+
+function injectConfigDrivenSingleButton(config) {
+  if (document.querySelector(`.${BUTTON_CLASS}`)) return;
+  const ext = config.detail_page.extractors;
+  const getText = (sel) => document.querySelector(sel)?.innerText?.trim() || null;
+  const photoEls = Array.from(document.querySelectorAll(ext.photos.selector));
+  const photos = [...new Set(
+    photoEls
+      .map(img => (img.src || img.dataset.src || '').replace(/\?.*$/, ''))
+      .filter(src => src && src.startsWith('http'))
+  )].slice(0, 8);
+
+  const vehicleData = {
+    vin:         document.querySelector(ext.vin.selector)
+                   ?.getAttribute(ext.vin.attribute) || 
+                   getText(ext.vin.selector),
+    price:       getText(ext.price.selector),
+    photos:      photos,
+    listing_url: window.location.href,
+    source_url:  window.location.href,
+    dealership:  config.dealership_name,
+    scraped_at:  new Date().toISOString(),
+  };
+
+  const btn = createImportButton(vehicleData);
+  const target = document.querySelector('h1') || document.querySelector('main');
+  if (target) target.insertAdjacentElement('afterend', btn);
 }
 
 
@@ -552,26 +645,55 @@ function injectSingleListingButton() {
 
 
 // ── Main ──────────────────────────────────────────────────────
-function init() {
-  // First check: is this actually a vehicle page?
-  if (!isVehiclePage()) return;
+async function init() {
+  // Get config for this domain
+  const config = await getDealershipConfig();
 
-  const pageType = getPageType();
+  if (!config) {
+    // No config for this domain — don't inject anything
+    return;
+  }
 
-  if (pageType === "inventory") {
-    const cards = findCarCards();
+  if (config.type === "cars_com") {
+    // Use Cars.com specific parser
+    if (!isVehiclePage()) return;
+    const pageType = getPageType();
+    if (pageType === "inventory") {
+      const cards = findCarCards();
+      if (cards.length > 0) {
+        injectInventoryButtons(cards);
+        const observer = new MutationObserver(() => {
+          injectInventoryButtons(findCarCards());
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+    } else {
+      injectSingleListingButton();
+    }
+    return;
+  }
+
+  // Use dealership config
+  const url = window.location.pathname;
+  const isInventory = config.inventory_page.url_patterns
+    .some(p => url.includes(p));
+
+  if (isInventory) {
+    const cards = Array.from(
+      document.querySelectorAll(config.inventory_page.card_selector)
+    );
     if (cards.length > 0) {
-      injectInventoryButtons(cards);
-
-      // Watch for new cards loaded dynamically (infinite scroll / pagination)
+      injectConfigDrivenButtons(cards, config);
       const observer = new MutationObserver(() => {
-        const newCards = findCarCards();
-        injectInventoryButtons(newCards);
+        const newCards = Array.from(
+          document.querySelectorAll(config.inventory_page.card_selector)
+        );
+        injectConfigDrivenButtons(newCards, config);
       });
       observer.observe(document.body, { childList: true, subtree: true });
     }
   } else {
-    injectSingleListingButton();
+    injectConfigDrivenSingleButton(config);
   }
 }
 

@@ -27,20 +27,7 @@
 
   "content_scripts": [
     {
-      "matches": [
-        "*://*/*/inventory*",
-        "*://*/*/vehicle*",
-        "*://*/*/listing*",
-        "*://*/*/used*",
-        "*://*/*/new*",
-        "*://*/*/certified*",
-        "*://*/*/cars*",
-        "*://www.cars.com/*",
-        "*://www.cargurus.com/*",
-        "*://www.autotrader.com/*",
-        "*://www.carmax.com/*",
-        "*://www.dealertrack.com/*"
-      ],
+      "matches": ["*://*/*"],
       "js": ["content_script.js"],
       "css": ["content_script.css"],
       "run_at": "document_idle"
@@ -62,7 +49,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["icons/*", "popup/*"],
+      "resources": ["icons/*", "popup/*", "dealership_configs.js"],
       "matches": ["*://*/*"]
     }
   ]

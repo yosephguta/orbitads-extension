@@ -37,6 +37,14 @@ async function init() {
     showLoggedIn(user);
     renderQueue();
     // Poll for queue updates every 2 seconds
+    // Load saved theme
+  const { defaultTheme = "family" } = await chrome.storage.local.get("defaultTheme");
+  document.getElementById("themeSelect").value = defaultTheme;
+
+  // Save theme when changed
+  document.getElementById("themeSelect").addEventListener("change", async (e) => {
+    await chrome.storage.local.set({ defaultTheme: e.target.value });
+  });
     setInterval(renderQueue, 2000);
   } else {
     showScreen(loginScreen);

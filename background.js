@@ -13,16 +13,16 @@ const PROVIDER_CONFIGS = {
     name: "Dealer Inspire",
     inventory_page: {
       url_patterns: ["/inventory", "/new-inventory", "/used-inventory",
-                     "/certified-inventory", "/pre-owned"],
+        "/certified-inventory", "/pre-owned"],
       card_selector: "li.vehicle-card",
       extractors: {
-        vin:     { type: "attribute", selector: "li.vehicle-card", attribute: "data-vin" },
-        uuid:    { type: "attribute", selector: "li.vehicle-card", attribute: "data-uuid" },
-        title:   { type: "text",  selector: "h2, h3, [class*='vehicle-title']" },
-        price:   { type: "text",  selector: ".final-price.internetPrice.font-weight-bo, .final-price.internetPrice" },
-        mileage: { type: "text",  selector: ".highlight-badge", filter: "miles" },
-        link:    { type: "href",  selector: "a" },
-        photos:  { type: "images", selector: "img", strip_params: true },
+        vin: { type: "attribute", selector: "li.vehicle-card", attribute: "data-vin" },
+        uuid: { type: "attribute", selector: "li.vehicle-card", attribute: "data-uuid" },
+        title: { type: "text", selector: "h2, h3, [class*='vehicle-title']" },
+        price: { type: "text", selector: ".final-price.internetPrice.font-weight-bo, .final-price.internetPrice" },
+        mileage: { type: "text", selector: ".highlight-badge", filter: "miles" },
+        link: { type: "href", selector: "a" },
+        photos: { type: "images", selector: "img", strip_params: true },
       },
     },
     detail_page: {
@@ -86,9 +86,11 @@ const PROVIDER_CONFIGS = {
 };
 
 const DEALERSHIP_CONFIGS = {
-  "jbakia.com":     { dealership_name: "JBA Kia", provider: "dealer_inspire", overrides: {} },
+  "jbakia.com": { dealership_name: "JBA Kia", provider: "dealer_inspire", overrides: {} },
   "www.jbakia.com": { dealership_name: "JBA Kia", provider: "dealer_inspire", overrides: {} },
 };
+
+const API_BASE = "http://localhost:8000/api/v1";
 
 function getConfigForDomain(domain) {
   console.log("OrbitAds: Looking up domain:", domain);
@@ -123,7 +125,7 @@ function buildConfig(dealerConfig) {
   if (!providerConfig) return null;
   return {
     dealership_name: dealerConfig.dealership_name,
-    provider:        dealerConfig.provider,
+    provider: dealerConfig.provider,
     inventory_page: {
       ...providerConfig.inventory_page,
       ...(dealerConfig.overrides?.inventory_page || {}),
@@ -153,7 +155,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("OrbitAds: Received vehicle, fetching detail page...", message.vehicle);
     enrichAndQueue(message.vehicle)
       .then(result => sendResponse({ success: true, queueLength: result }))
-      .catch(err   => sendResponse({ success: false, error: err.message }));
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
@@ -172,7 +174,7 @@ async function enrichAndQueue(vehicle) {
     console.log(`OrbitAds: Opening detail page: ${vehicle.listing_url}`);
 
     tab = await chrome.tabs.create({
-      url:    vehicle.listing_url,
+      url: vehicle.listing_url,
       active: false,
     });
 
@@ -181,15 +183,15 @@ async function enrichAndQueue(vehicle) {
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func:   extractDetailPageData,
+      func: extractDetailPageData,
     });
 
     const detailData = results?.[0]?.result;
     console.log("OrbitAds: Detail page data:", detailData);
 
     if (detailData) {
-      vehicle.vin     = detailData.vin     || vehicle.vin;
-      vehicle.price   = detailData.price   || vehicle.price;
+      vehicle.vin = detailData.vin || vehicle.vin;
+      vehicle.price = detailData.price || vehicle.price;
       vehicle.mileage = detailData.mileage || vehicle.mileage;
 
       if (detailData.photos && detailData.photos.length > vehicle.photos.length) {
@@ -208,7 +210,7 @@ async function enrichAndQueue(vehicle) {
     console.error("OrbitAds: Detail page scrape failed:", err);
   } finally {
     if (tab) {
-      try { await chrome.tabs.remove(tab.id); } catch (e) {}
+      try { await chrome.tabs.remove(tab.id); } catch (e) { }
     }
   }
 
@@ -227,7 +229,7 @@ function extractDetailPageData() {
     '.slick-next, [aria-label="Next Photo"], [title="Next Photo"], ' +
     '.carousel-next, .gallery-next, button[class*="next"]'
   );
-  
+
   const totalSlides = document.querySelectorAll(
     '.slick-slide:not(.slick-cloned)'
   ).length || 0;
@@ -241,17 +243,17 @@ function extractDetailPageData() {
 
   // Also trigger lazy load on all images with data-src
   document.querySelectorAll('img[data-src], img[data-lazy-src], img[data-lazysrc]').forEach(img => {
-    if (img.dataset.src)     img.src = img.dataset.src;
+    if (img.dataset.src) img.src = img.dataset.src;
     if (img.dataset.lazySrc) img.src = img.dataset.lazySrc;
     if (img.dataset.lazysrc) img.src = img.dataset.lazysrc;
   });
 
   // ── VIN ───────────────────────────────────────────────────
   const vinEl = document.querySelector('[data-vin]') ||
-                document.querySelector('.vin-value') ||
-                document.querySelector('[class*="vin"]');
+    document.querySelector('.vin-value') ||
+    document.querySelector('[class*="vin"]');
   const vinText = vinEl?.getAttribute('data-vin') ||
-                  vinEl?.innerText?.match(/[A-HJ-NPR-Z0-9]{17}/i)?.[0];
+    vinEl?.innerText?.match(/[A-HJ-NPR-Z0-9]{17}/i)?.[0];
   const bodyVin = document.body.innerText.match(/\b([A-HJ-NPR-Z0-9]{17})\b/)?.[1];
   const vin = vinText || bodyVin || null;
 
@@ -263,10 +265,10 @@ function extractDetailPageData() {
   // Extract ALL photo URLs directly from page HTML source
   // This gets all photos regardless of carousel state or lazy loading
   const html = document.documentElement.innerHTML;
-  
+
   // Find all pictures.dealer.com URLs in the raw HTML
   const allMatches = html.match(/https:\/\/pictures\.dealer\.com\/[^"'\s>\\]+/g) || [];
-  
+
   const photoSources = new Set();
   allMatches.forEach(url => {
     // Clean the URL — strip query params and escape sequences
@@ -281,7 +283,7 @@ function extractDetailPageData() {
 
   // Filter out thumbnails and junk
   const skipPatterns = [
-    'thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 
+    'thumb_', '/thumb/', 'thumbnail', 'logo', 'icon',
     'badge', 'placeholder', '1x1', 'spacer'
   ];
   const photos = Array.from(photoSources)
@@ -304,8 +306,8 @@ function extractDetailPageData() {
   // Fallback — find any element with $ and "price" class
   if (!price) {
     const allPriceEls = Array.from(document.querySelectorAll('[class*="price"]'));
-    const dollarEl = allPriceEls.find(el => 
-      el.innerText?.trim().startsWith('$') && 
+    const dollarEl = allPriceEls.find(el =>
+      el.innerText?.trim().startsWith('$') &&
       !el.querySelector('*')  // leaf node only
     );
     price = dollarEl?.innerText?.trim() || null;
@@ -341,8 +343,8 @@ function waitForTabLoad(tabId) {
 function parseTrimFromTitle(title, year, make, model) {
   if (!title) return null;
   let trim = title;
-  if (year)  trim = trim.replace(year, '');
-  if (make)  trim = trim.replace(new RegExp(make, 'gi'), '');
+  if (year) trim = trim.replace(year, '');
+  if (make) trim = trim.replace(new RegExp(make, 'gi'), '');
   if (model) trim = trim.replace(new RegExp(model, 'gi'), '');
   return trim.trim().replace(/\s+/g, ' ') || null;
 }
@@ -350,16 +352,18 @@ function parseTrimFromTitle(title, year, make, model) {
 
 // ── Queue management ──────────────────────────────────────────
 async function addToQueue(vehicle) {
-  const { queue = [] } = await chrome.storage.local.get("queue");
+  const { queue = [], defaultTheme = "family" } =
+    await chrome.storage.local.get(["queue", "defaultTheme"]);
 
   const job = {
-    id:         Date.now().toString(),
-    vehicle:    vehicle,
-    status:     "waiting",
-    added_at:   new Date().toISOString(),
-    progress:   0,
-    label:      "Waiting...",
-    error:      null,
+    id: Date.now().toString(),
+    vehicle: vehicle,
+    theme: defaultTheme,    // ← add this line
+    status: "waiting",
+    added_at: new Date().toISOString(),
+    progress: 0,
+    label: "Waiting...",
+    error: null,
     result_url: null,
   };
 
@@ -386,10 +390,10 @@ async function processQueue() {
   console.log(`OrbitAds: Processing — ${nextJob.vehicle.year} ${nextJob.vehicle.make} ${nextJob.vehicle.model}`);
 
   try {
-    await simulateProcessing(nextJob, queue);
+    await realProcessing(nextJob, queue);
   } catch (err) {
     nextJob.status = "failed";
-    nextJob.error  = err.message;
+    nextJob.error = err.message;
   }
 
   await saveQueue(queue);
@@ -398,26 +402,93 @@ async function processQueue() {
 }
 
 
-async function simulateProcessing(job, queue) {
-  const stages = [
-    { progress: 10, label: "Decoding VIN...",       delay: 500  },
-    { progress: 30, label: "Generating script...",  delay: 1000 },
-    { progress: 55, label: "Cloning voice...",      delay: 800  },
-    { progress: 75, label: "Generating avatar...",  delay: 1000 },
-    { progress: 90, label: "Assembling video...",   delay: 800  },
-  ];
+async function realProcessing(job, queue) {
+  const { token } = await chrome.storage.local.get("token");
 
-  for (const stage of stages) {
-    job.progress = stage.progress;
-    job.label    = stage.label;
-    await saveQueue(queue);
-    await sleep(stage.delay);
+  if (!token) {
+    throw new Error("Not logged in — please sign in via the extension popup.");
   }
 
-  job.status     = "completed";
-  job.progress   = 100;
-  job.label      = "Complete!";
-  job.result_url = "https://example.com/placeholder-video.mp4";
+  const v = job.vehicle;
+
+  // ── Submit the job to OrbitAds backend ──────────────────
+  const jobPayload = {
+    vin: v.vin || null,
+    listing_url: v.listing_url || null,
+    theme: job.theme || "family",
+    car_photo_urls: v.photos?.length
+      ? JSON.stringify(v.photos.slice(0, 5))  // top 5 photos for the video
+      : null,
+  };
+
+  const createResp = await fetch(`${API_BASE}/jobs/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify(jobPayload),
+  });
+
+  if (!createResp.ok) {
+    const err = await createResp.json().catch(() => ({}));
+    throw new Error(err.detail || `API error: ${createResp.status}`);
+  }
+
+  const apiJob = await createResp.json();
+  const apiJobId = apiJob.id;
+
+  job.api_job_id = apiJobId;
+  job.label = "Job created, pipeline starting...";
+  job.progress = 5;
+  await saveQueue(queue);
+
+  // ── Poll until complete ──────────────────────────────────
+  const POLL_INTERVAL = 8000;   // 8 seconds
+  const MAX_WAIT = 600000; // 10 minutes
+  let elapsed = 0;
+
+  while (elapsed < MAX_WAIT) {
+    await sleep(POLL_INTERVAL);
+    elapsed += POLL_INTERVAL;
+
+    const pollResp = await fetch(`${API_BASE}/jobs/${apiJobId}`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+
+    if (!pollResp.ok) continue;
+
+    const pollData = await pollResp.json();
+
+    // Map backend status to progress and label
+    const statusMap = {
+      "pending": { progress: 5, label: "Starting pipeline..." },
+      "vin_decoding": { progress: 15, label: "Decoding VIN..." },
+      "script_generating": { progress: 35, label: "Writing ad script..." },
+      "voice_cloning": { progress: 55, label: "Cloning voice..." },
+      "avatar_generating": { progress: 75, label: "Generating avatar..." },
+      "assembling": { progress: 88, label: "Assembling video..." },
+      "completed": { progress: 100, label: "Complete!" },
+      "failed": { progress: 0, label: pollData.error_message || "Failed" },
+    };
+
+    const mapped = statusMap[pollData.status] || { progress: job.progress, label: job.label };
+    job.progress = mapped.progress;
+    job.label = mapped.label;
+
+    await saveQueue(queue);
+
+    if (pollData.status === "completed") {
+      job.result_url = pollData.final_video_url;
+      return;
+    }
+
+    if (pollData.status === "failed") {
+      throw new Error(pollData.error_message || "Pipeline failed.");
+    }
+  }
+
+  throw new Error("Timed out waiting for video generation.");
 }
 
 

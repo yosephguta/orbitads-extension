@@ -55,6 +55,7 @@
 
   <!-- ── Queue screen ─────────────────────────────────── -->
   <div class="screen" id="queueScreen" style="display:none">
+    <div id="resumeBanner" class="resume-banner" style="display:none"></div>
     <div class="queue-header">
       <span id="queueCount"></span>
       <button class="btn-link" id="clearDoneBtn">Clear completed</button>
@@ -73,7 +74,41 @@
     </div>
     <div id="jobList"></div>
   </div>
+  <!-- ── Review screen ─────────────────────────────────────── -->
+<div class="screen" id="reviewScreen" style="display:none">
+  <div class="review-header">
+    <div class="review-header-top">
+      <button class="btn-back" id="backBtn">← Back</button>
+    <div id="reviewTitle" class="review-title"></div>
+  </div>
+  <div id="reviewMeta" class="review-meta"></div>
+</div>
+  <div class="review-status" id="reviewStatus">
+    Classifying photos...
+  </div>
 
+  <div id="reviewSections"></div>
+
+  <div class="review-actions">
+    <label class="upload-label">
+      <input type="file" id="uploadInput" accept="image/*" multiple style="display:none">
+      + Upload photos
+    </label>
+    <button class="btn-primary" id="generateBtn" disabled>
+      Generating photos... 
+    </button>
+  </div>
+  <!-- Facebook photo counter bar -->
+<div class="fb-bar-wrap">
+  <div class="fb-bar-label">
+    <span>Facebook listing photos</span>
+    <span id="fbCount">0 / 20</span>
+  </div>
+  <div class="fb-bar-track">
+    <div class="fb-bar-fill" id="fbBarFill"></div>
+  </div>
+</div>
+</div>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -11,6 +11,11 @@
 const PROVIDER_CONFIGS = {
   dealer_inspire: {
     name: "Dealer Inspire",
+    photo_hints: {
+    exterior_position: "first",
+    exterior_count: 12,
+    interior_position: "after_exterior",
+    },
     inventory_page: {
       url_patterns: ["/inventory", "/new-inventory", "/used-inventory",
         "/certified-inventory", "/pre-owned"],
@@ -86,8 +91,26 @@ const PROVIDER_CONFIGS = {
 };
 
 const DEALERSHIP_CONFIGS = {
-  "jbakia.com": { dealership_name: "JBA Kia", provider: "dealer_inspire", overrides: {} },
-  "www.jbakia.com": { dealership_name: "JBA Kia", provider: "dealer_inspire", overrides: {} },
+  "jbakia.com": { 
+  dealership_name: "JBA Kia", 
+  provider: "dealer_inspire", 
+  overrides: {},
+  photo_hints: {
+    exterior_position: "last",
+    exterior_count: 14,
+    interior_position: "middle",
+    },
+  },
+  "www.jbakia.com": { 
+  dealership_name: "JBA Kia", 
+  provider: "dealer_inspire", 
+  overrides: {},
+  photo_hints: {
+    exterior_position: "last",
+    exterior_count: 14,
+    interior_position: "middle",
+    },
+  },
 };
 
 const API_BASE = "http://localhost:8000/api/v1";
@@ -126,6 +149,10 @@ function buildConfig(dealerConfig) {
   return {
     dealership_name: dealerConfig.dealership_name,
     provider: dealerConfig.provider,
+    photo_hints: {
+      ...providerConfig.photo_hints,
+      ...(dealerConfig.photo_hints || {}),
+    },
     inventory_page: {
       ...providerConfig.inventory_page,
       ...(dealerConfig.overrides?.inventory_page || {}),
@@ -159,12 +186,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "QUEUE_REVIEWED") {
+  addToQueue(message.vehicle)
+    .then(result => sendResponse({ success: true, queueLength: result }))
+    .catch(err   => sendResponse({ success: false, error: err.message }));
+  return true;
+  }
+
   return true;
 });
 
+/**
+ * Use photo_hints to select the most likely exterior/interior photos
+ * from the full scraped photo array before sending to classifier.
+ * This avoids classifying 37 photos when we know where the good ones are.
+ */
+function applyPhotoHints(photos, photoHints) {
+  if (!photoHints || !photos.length) return photos;
+
+  const total    = photos.length;
+  const extCount = photoHints.exterior_count || 12;
+  const extPos   = photoHints.exterior_position || "first";
+
+  let exteriorCandidates = [];
+  let interiorCandidates = [];
+
+  if (extPos === "first") {
+    exteriorCandidates = photos.slice(0, extCount);
+    interiorCandidates = photos.slice(extCount, extCount + 8);
+  } else if (extPos === "last") {
+    exteriorCandidates = photos.slice(Math.max(0, total - extCount));
+    interiorCandidates = photos.slice(1, 9);  // JBA puts interior in the middle
+  } else {
+    // No hints — return all photos for classifier to sort out
+    return photos.slice(0, 20);
+  }
+
+  // Combine exterior candidates first, then interior
+  const combined = [...exteriorCandidates, ...interiorCandidates];
+  // Deduplicate
+  return [...new Set(combined)].slice(0, 20);
+}
 
 // ── Detail page enrichment ────────────────────────────────────
 async function enrichAndQueue(vehicle) {
+
+  const domain = vehicle.listing_url 
+  ? new URL(vehicle.listing_url).hostname 
+  : null;
+
   if (!vehicle.listing_url) {
     return addToQueue(vehicle);
   }
@@ -199,6 +269,12 @@ async function enrichAndQueue(vehicle) {
         console.log(`OrbitAds: Got ${detailData.photos.length} full photos`);
       }
 
+      // Apply photo hints to pre-select the right photos for classification
+      const domainConfig   = getConfigForDomain(domain);
+      const photoHints     = domainConfig?.photo_hints;
+      vehicle.photos_for_video = applyPhotoHints(vehicle.photos, photoHints);
+      console.log(`OrbitAds: Selected ${vehicle.photos_for_video.length} photos for classification using hints: ${JSON.stringify(photoHints)}`);
+
       if (!vehicle.trim && detailData.title) {
         vehicle.trim = parseTrimFromTitle(
           detailData.title, vehicle.year, vehicle.make, vehicle.model
@@ -214,7 +290,63 @@ async function enrichAndQueue(vehicle) {
     }
   }
 
-  return addToQueue(vehicle);
+  // Store for review instead of queuing directly
+  await chrome.storage.local.set({
+    pending_review: {
+      vehicle:          vehicle,
+      photos_all:       vehicle.photos,              // ALL photos for the UI
+      photos_for_video: vehicle.photos_for_video || vehicle.photos.slice(0, 20),
+      classified:       null,
+      added_at:         new Date().toISOString(),
+    }
+  });
+
+  // Open the popup so user sees the review screen
+  chrome.action.openPopup().catch(() => {
+    // openPopup() only works if called from a user gesture in some Chrome versions
+    // If it fails, the badge will alert the user
+    chrome.action.setBadgeText({ text: "!" });
+    chrome.action.setBadgeBackgroundColor({ color: "#1a56db" });
+  });
+
+  // Classify photos in the background while popup is opening
+  classifyInBackground(vehicle);
+
+  return 1;
+}
+
+async function classifyInBackground(vehicle) {
+  const photosToClassify = vehicle.photos_for_video || vehicle.photos.slice(0, 20);
+  
+  if (!photosToClassify.length) return;
+
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) return;
+
+  try {
+    const resp = await fetch(`${API_BASE}/photos/classify`, {
+      method:  "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({ photo_urls: photosToClassify }),
+    });
+
+    if (!resp.ok) return;
+
+    const classified = await resp.json();
+
+    const { pending_review } = await chrome.storage.local.get("pending_review");
+    if (pending_review) {
+      pending_review.classified = classified;
+      // Make sure ALL photos are stored for the UI to show
+      await chrome.storage.local.set({ pending_review });
+      console.log("OrbitAds: Classification complete", classified);
+    }
+  } catch (err) {
+    console.error("OrbitAds: Background classification failed:", err);
+  }
 }
 
 /**
@@ -355,6 +487,19 @@ async function addToQueue(vehicle) {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
 
+    // Prevent duplicate VINs in the queue
+  if (vehicle.vin) {
+    const alreadyQueued = queue.some(j => 
+      j.vehicle.vin === vehicle.vin && 
+      j.status !== "completed" && 
+      j.status !== "failed"
+    );
+    if (alreadyQueued) {
+      console.log(`OrbitAds: VIN ${vehicle.vin} already in queue, skipping.`);
+      return queue.length;
+    }
+  }
+
   const job = {
     id: Date.now().toString(),
     vehicle: vehicle,
@@ -390,15 +535,21 @@ async function processQueue() {
   console.log(`OrbitAds: Processing — ${nextJob.vehicle.year} ${nextJob.vehicle.make} ${nextJob.vehicle.model}`);
 
   try {
-    await realProcessing(nextJob, queue);
-  } catch (err) {
-    nextJob.status = "failed";
-    nextJob.error = err.message;
+  await realProcessing(nextJob, queue);
+  // Explicitly mark as completed if realProcessing didn't
+  if (nextJob.status !== "completed") {
+    nextJob.status   = "completed";
+    nextJob.progress = 100;
+    nextJob.label    = "Complete!";
   }
+} catch (err) {
+  nextJob.status = "failed";
+  nextJob.error  = err.message;
+}
 
-  await saveQueue(queue);
-  await chrome.storage.local.set({ processing: false });
-  processQueue();
+await saveQueue(queue);
+await chrome.storage.local.set({ processing: false });
+processQueue();
 }
 
 
@@ -480,10 +631,16 @@ async function realProcessing(job, queue) {
 
     if (pollData.status === "completed") {
       job.result_url = pollData.final_video_url;
+      job.status     = "completed";
+      job.progress   = 100;
+      job.label      = "Complete!";
+      await saveQueue(queue);
       return;
     }
 
     if (pollData.status === "failed") {
+       job.status = "failed";
+       await saveQueue(queue);
       throw new Error(pollData.error_message || "Pipeline failed.");
     }
   }

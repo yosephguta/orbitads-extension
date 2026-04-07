@@ -267,3 +267,220 @@ body {
   align-items: center;
 }
 
+/* ── Review screen ────────────────────────────────────────── */
+.review-header {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.review-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #111827;
+}
+
+.review-meta {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.review-status {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 10px;
+  text-align: center;
+  font-style: italic;
+}
+
+.review-section {
+  margin-bottom: 12px;
+}
+
+.review-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.photo-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.photo-thumb {
+  position: relative;
+  width: 72px;
+  height: 54px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  cursor: grab;
+}
+
+.photo-thumb:hover {
+  border-color: #1a56db;
+}
+
+.photo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photo-thumb .remove-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  background: rgba(0,0,0,0.6);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.review-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.upload-label {
+  flex: 1;
+  text-align: center;
+  padding: 7px;
+  border: 1px dashed #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.upload-label:hover {
+  border-color: #1a56db;
+  color: #1a56db;
+}
+
+#generateBtn {
+  flex: 1;
+}
+
+.review-header-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.btn-back {
+  background: none;
+  border: none;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.btn-back:hover { color: #111827; }
+
+/* ── Facebook photo bar ───────────────────────────────────── */
+.fb-bar-wrap {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+
+.fb-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 5px;
+}
+
+.fb-bar-track {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.fb-bar-fill {
+  height: 100%;
+  background: #16a34a;
+  border-radius: 99px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.fb-bar-fill.over { background: #dc2626; }
+
+.photo-thumb.drag-over {
+  border-color: #1a56db;
+  transform: scale(1.05);
+}
+
+.photo-grid.drag-over-grid {
+  background: #eff6ff;
+  border: 1px dashed #1a56db;
+  border-radius: 6px;
+  min-height: 40px;
+}
+
+.resume-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #1e40af;
+}
+
+.photo-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 30px;   /* ← add this line */
+  padding: 4px;
+}
+
+.drop-zone {
+  width: 72px;
+  height: 54px;
+  border: 2px dashed #d1d5db;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #9ca3af;
+  cursor: default;
+}
+
+.drop-zone.drag-over-grid {
+  border-color: #1a56db;
+  background: #eff6ff;
+  color: #1a56db;
+}

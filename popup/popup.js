@@ -259,6 +259,64 @@ async function checkPendingReview() {
   return false;
 }
 
+function buildReviewPhotos(classified, photosAll, blockedPhotos = [], explicitOther = []) {
+  const explicitOtherSet = new Set(explicitOther);
+  const photos = {
+    exterior: classified.exterior || [],
+    interior: classified.interior || [],
+    additional: classified.additional || [],
+    other: classified.other || [],
+  };
+
+  // Merge all unclassified photos from photos_all into other
+  const allClassifiedUrls = new Set([
+    ...photos.exterior,
+    ...photos.interior,
+    ...photos.additional,
+    ...photos.other,
+  ]);
+  const unclassified = (photosAll || [])
+    .filter(url => !allClassifiedUrls.has(url));
+  photos.other = [...photos.other, ...unclassified];
+
+  // Deduplicate across all sections
+  const seenUrls = new Set();
+  ['exterior', 'interior', 'additional', 'other'].forEach(section => {
+    photos[section] = (photos[section] || []).filter(url => {
+      if (seenUrls.has(url)) return false;
+      seenUrls.add(url);
+      return true;
+    });
+  });
+
+  // Auto-fill additional from other to reach 20 total
+  // Only after dedup and merge so logos are already in other
+  const currentTotal = photos.exterior.length +
+    photos.interior.length +
+    photos.additional.length;
+  const needed = Math.max(0, 20 - currentTotal);
+
+  if (needed > 0) {
+    const candidates = photos.other.filter(url => {
+      const filename = url.split('/').pop().toLowerCase();
+      const lower = url.toLowerCase();
+      // Never auto-fill photos Claude explicitly said are "other"
+      if (explicitOtherSet.has(url)) return false;
+      if (filename.endsWith('.png')) return false;
+      const junkPatterns = ['showme', 'carfax', 'valuebadge', 'videoplayer'];
+      if (junkPatterns.some(p => lower.includes(p))) return false;
+      return true;
+    });
+
+    const toAdd = candidates.slice(0, needed);
+    photos.additional = [...photos.additional, ...toAdd];
+    const addedSet = new Set(toAdd);
+    photos.other = photos.other.filter(u => !addedSet.has(u));
+  }
+
+  return photos;
+}
+
 function showReviewScreen(pendingReview) {
   if (queueInterval) {
     clearInterval(queueInterval);
@@ -279,32 +337,17 @@ function showReviewScreen(pendingReview) {
   if (pendingReview.classified) {
     reviewStatus.style.display = "none";
 
-    // Restore saved state if user already made changes (e.g. deleted photos)
-    const savedTotal = Object.values(pendingReview.review_photos || {})
-      .flat().length;
-    const allTotal = (pendingReview.photos_all || []).length;
-
-    if (pendingReview.review_photos && savedTotal >= allTotal * 0.8) {
-      // Saved state looks complete — restore it
+    if (pendingReview.review_photos) {
+      // Restore user's saved edits
       reviewPhotos = pendingReview.review_photos;
     } else {
-      // Saved state is stale or incomplete — rebuild from scratch
-      reviewPhotos = {
-        exterior: pendingReview.classified.exterior || [],
-        interior: pendingReview.classified.interior || [],
-        additional: [],
-        other: pendingReview.classified.other || [],
-      };
-
-      // Add any photos that weren't classified into other
-      const allClassifiedUrls = new Set([
-        ...reviewPhotos.exterior,
-        ...reviewPhotos.interior,
-        ...reviewPhotos.other,
-      ]);
-      const unclassified = (pendingReview.photos_all || pendingReview.vehicle.photos || [])
-        .filter(url => !allClassifiedUrls.has(url));
-      reviewPhotos.other = [...reviewPhotos.other, ...unclassified];
+      // Build fresh from classification
+      reviewPhotos = buildReviewPhotos(
+        pendingReview.classified,
+        pendingReview.photos_all || pendingReview.vehicle.photos,
+        pendingReview.blocked_photos || [],
+        pendingReview.explicit_other || []
+      );
     }
 
     renderPhotoSections();
@@ -329,12 +372,17 @@ async function pollClassification() {
     if (pending_review?.classified) {
       clearInterval(interval);
       reviewStatus.style.display = "none";
-      reviewPhotos = {
-        exterior: pending_review.classified.exterior || [],
-        interior: pending_review.classified.interior || [],
-        other: pending_review.classified.other || [],
-      };
+
+      reviewPhotos = buildReviewPhotos(
+        pending_review.classified,
+        pending_review.photos_all || pending_review.vehicle.photos,
+        pending_review.blocked_photos || [],
+        pending_review.explicit_other || []
+      );
+
+      await saveReviewPhotos();  // save immediately so Back+Resume gets same result
       renderPhotoSections();
+      updateFbBar();
       generateBtn.disabled = false;
       generateBtn.textContent = "Generate Ad →";
     }

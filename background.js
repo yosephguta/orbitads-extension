@@ -342,7 +342,7 @@ async function classifyInBackground(vehicle) {
     if (!resp.ok) return;
 
     const classified = await resp.json();
-    
+
     // First photo of listing is almost always exterior — rescue it
     const firstPhoto = vehicle.photos[0];
     const alreadyInExterior = classified.exterior?.includes(firstPhoto);
@@ -592,8 +592,8 @@ async function realProcessing(job, queue) {
     vin: v.vin || null,
     listing_url: v.listing_url || null,
     theme: job.theme || "family",
-    car_photo_urls: v.photos?.length
-      ? JSON.stringify(v.photos.slice(0, 5))  // top 5 photos for the video
+    car_photo_urls: v.photos_for_video?.length
+      ? JSON.stringify(v.photos_for_video)  // all reviewed photos
       : null,
   };
 

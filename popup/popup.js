@@ -553,24 +553,32 @@ function initDragAndDrop() {
 
 // Generate button
 generateBtn.addEventListener("click", async () => {
+  // Immediately disable and show feedback
+  generateBtn.disabled = true;
+  generateBtn.textContent = "Adding to queue...";
+  generateBtn.style.background = "#6b7280";
+
   const allPhotos = [
     ...reviewPhotos.exterior,
     ...reviewPhotos.interior,
+    ...(reviewPhotos.additional || []),
   ];
 
   if (allPhotos.length === 0) {
     alert("Please keep at least one photo.");
+    generateBtn.disabled = false;
+    generateBtn.textContent = "Generate Ad →";
+    generateBtn.style.background = "";
     return;
   }
 
-  // Add to queue with reviewed photos
   const { pending_review } = await chrome.storage.local.get("pending_review");
   if (!pending_review) return;
 
   const vehicle = {
     ...pending_review.vehicle,
     photos: pending_review.vehicle.photos,
-    photos_for_video: allPhotos,
+    photos_for_video: allPhotos,   // ← reviewed and ordered photos
   };
 
   await chrome.runtime.sendMessage({
@@ -578,11 +586,9 @@ generateBtn.addEventListener("click", async () => {
     vehicle: vehicle,
   });
 
-  // Clear pending review
   await chrome.storage.local.remove("pending_review");
   chrome.action.setBadgeText({ text: "" });
 
-  // Show queue
   renderQueue();
   if (queueInterval) clearInterval(queueInterval);
   queueInterval = setInterval(renderQueue, 2000);

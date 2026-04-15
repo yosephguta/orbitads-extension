@@ -81,13 +81,20 @@
   <div class="screen" id="reviewScreen" style="display:none">
     <div class="review-header">
       <div class="review-header-top">
-        <button class="btn-back" id="backBtn">← Back</button>
+        <button class="btn-back" id="backBtn">← Back to queue</button>
         <div id="reviewTitle" class="review-title"></div>
       </div>
       <div id="reviewMeta" class="review-meta"></div>
     </div>
     <div class="review-status" id="reviewStatus">
       Classifying photos...
+    </div>
+
+    <div id="activeJobStatus" class="active-job-status" style="display:none">
+      <div class="active-job-label" id="activeJobLabel"></div>
+      <div class="progress-wrap">
+        <div class="progress-bar" id="activeJobBar" style="width:0%"></div>
+      </div>
     </div>
 
     <div class="fb-bar-wrap">
@@ -103,13 +110,22 @@
     <div id="reviewSections"></div>
 
     <div class="review-actions">
-      <label class="upload-label">
-        <input type="file" id="uploadInput" accept="image/*" multiple style="display:none">
-        + Upload photos
-      </label>
-      <button class="btn-primary" id="generateBtn" disabled>
-        Generating photos...
-      </button>
+      <div class="video-type-row">
+        <label for="videoTypeSelect">Video type:</label>
+        <select id="videoTypeSelect">
+          <option value="walkaround">🚗 Walkaround only (free)</option>
+          <option value="avatar">⭐ Avatar + Walkaround (premium)</option>
+        </select>
+      </div>
+      <div class="review-actions-buttons">
+        <label class="upload-label">
+          <input type="file" id="uploadInput" accept="image/*" multiple style="display:none">
+          + Upload photos
+        </label>
+        <button class="btn-primary" id="generateBtn" disabled>
+          Classifying...
+        </button>
+      </div>
     </div>
     <!-- Facebook photo counter bar -->
 

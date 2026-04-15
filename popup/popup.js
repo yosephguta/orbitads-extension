@@ -192,6 +192,64 @@ async function renderQueue() {
     ].filter(Boolean).join(", ");
 
   jobList.innerHTML = [...queue].reverse().map(job => renderJobCard(job)).join("");
+
+  // Make job cards clickable — opens vehicle detail/review screen
+  document.querySelectorAll(".job-card").forEach(card => {
+    card.addEventListener("click", async (e) => {
+      // Don't trigger if clicking View Ad link
+      if (e.target.tagName === "A" || e.target.classList.contains("btn-small")) return;
+
+      const jobId = card.dataset.jobId;
+      const { queue = [] } = await chrome.storage.local.get("queue");
+      const job = queue.find(j => j.id === jobId);
+      if (!job) return;
+
+      // Store this job as pending_review so review screen can show it
+      const { pending_review } = await chrome.storage.local.get("pending_review");
+
+      // Build a view-only pending_review from the job's vehicle data
+      const photosForVideo = job.vehicle.photos_for_video || [];
+      const allPhotos = job.vehicle.photos || [];
+
+      // Photos that went into the video
+      const videoPhotoSet = new Set(photosForVideo);
+
+      // All remaining photos go to other
+      const remainingPhotos = allPhotos.filter(url => !videoPhotoSet.has(url));
+
+      const viewReview = {
+        vehicle: job.vehicle,
+        photos_all: allPhotos,
+        view_only: true,
+        completed_job: job,
+        classified: {
+          exterior: photosForVideo.slice(0, 6),
+          interior: photosForVideo.slice(6, 8),
+          additional: photosForVideo.slice(8),
+          other: [],
+        },
+        review_photos: {
+          exterior: photosForVideo.slice(0, 6),
+          interior: photosForVideo.slice(6, 8),
+          additional: photosForVideo.slice(8),
+          other: remainingPhotos,   // all remaining photos shown here
+        },
+      };
+
+      // If we have classified data saved in the job, use it
+      if (job.vehicle.photos_for_video) {
+        viewReview.review_photos = {
+          exterior: job.vehicle.photos_for_video.slice(0, 6),
+          interior: job.vehicle.photos_for_video.slice(6),
+          additional: [],
+          other: [],
+        };
+      }
+
+      await chrome.storage.local.set({ pending_review: viewReview });
+      showReviewScreen(viewReview);
+    });
+  });
 }
 
 
@@ -211,24 +269,27 @@ function renderJobCard(job) {
   const progressBarClass = job.status === "completed" ? "done" :
     job.status === "failed" ? "failed" : "";
 
-  const actionsHtml = job.status === "completed" && job.result_url
+  const actionsHtml = job.status === "completed"
     ? `<div class="job-actions">
-         <a href="${job.result_url}" target="_blank" class="btn-small">▶ View Ad</a>
+         ${job.result_url
+      ? `<a href="${job.result_url}" target="_blank" class="btn-small">▶ View Ad</a>`
+      : `<span class="job-label" style="color:#6b7280">Fetching video link...</span>`
+    }
        </div>`
     : job.status === "failed" && job.error
-      ? `<div class="job-label" style="color:#dc2626">${job.error}</div>`
+      ? `<div class="job-label" style="color:#dc2626;margin-top:4px">${job.error}</div>`
       : "";
 
   return `
-    <div class="job-card">
+    <div class="job-card" data-job-id="${job.id}" style="cursor:pointer">
       <div class="job-top">
-        <div class="job-title">${title || "Unknown Vehicle"}</div>
+        <div class="job-title job-title-link">${title || "Unknown Vehicle"}</div>
         <span class="badge ${badgeClass}">${badgeText}</span>
       </div>
       ${meta ? `<div class="job-meta">${meta}</div>` : ""}
       ${v.price ? `<div class="job-price">${v.price}</div>` : ""}
       <div class="progress-wrap">
-        <div class="progress-bar ${progressBarClass}" 
+        <div class="progress-bar ${progressBarClass}"
              style="width: ${job.progress || 0}%"></div>
       </div>
       <div class="job-label">${job.label || ""}</div>
@@ -317,7 +378,75 @@ function buildReviewPhotos(classified, photosAll, blockedPhotos = [], explicitOt
   return photos;
 }
 
+
+let activeJobPolling = false;
+
+async function pollActiveJob() {
+  if (activeJobPolling) return;  // already polling
+  activeJobPolling = true;
+
+  const activeJobInterval = setInterval(async () => {
+    if (reviewScreen.style.display === "none") {
+      clearInterval(activeJobInterval);
+      activeJobPolling = false;
+      return;
+    }
+
+    const { queue = [] } = await chrome.storage.local.get("queue");
+
+    // Find the most recently added job (last in array)
+    const latestJob = queue[queue.length - 1];
+
+    const statusEl = document.getElementById("activeJobStatus");
+    const labelEl = document.getElementById("activeJobLabel");
+    const barEl = document.getElementById("activeJobBar");
+
+    if (!latestJob || !statusEl) return;
+
+    statusEl.style.display = "block";
+    labelEl.textContent = latestJob.label || "Processing...";
+    barEl.style.width = (latestJob.progress || 0) + "%";
+
+    if (latestJob.status === "completed") {
+      clearInterval(activeJobInterval);
+      activeJobPolling = false;
+      const completedRecently = latestJob.added_at &&
+        (Date.now() - new Date(latestJob.added_at).getTime()) < 3600000;
+
+      // Remove any previously added buttons in the status element
+      statusEl.querySelectorAll("a").forEach(el => el.remove());
+
+      if (latestJob.result_url && completedRecently) {
+        labelEl.textContent = "✓ Ad ready!";
+        barEl.classList.add("done");
+        const viewBtn = document.createElement("a");
+        viewBtn.href = latestJob.result_url;
+        viewBtn.target = "_blank";
+        viewBtn.className = "btn-small injected-view-btn";
+        viewBtn.textContent = "▶ View Ad";
+        viewBtn.style.marginTop = "8px";
+        viewBtn.style.display = "inline-block";
+        statusEl.appendChild(viewBtn);
+      } else {
+        statusEl.style.display = "none";
+      }
+    }
+
+    if (latestJob.status === "failed") {
+      clearInterval(activeJobInterval);
+      activeJobPolling = false;
+      labelEl.textContent = `Failed: ${latestJob.error || "Unknown error"}`;
+      labelEl.style.color = "#dc2626";
+      barEl.classList.add("failed");
+    }
+  }, 3000);
+}
+
 function showReviewScreen(pendingReview) {
+  // Clean up any previously injected View Ad buttons
+  document.querySelectorAll(".btn-primary[href], .injected-view-btn").forEach(el => el.remove());
+  generateBtn.style.display = "block";
+
   if (queueInterval) {
     clearInterval(queueInterval);
     queueInterval = null;
@@ -364,6 +493,24 @@ function showReviewScreen(pendingReview) {
   }
 
   showScreen(reviewScreen);
+
+  if (pendingReview.view_only && pendingReview.completed_job?.result_url) {
+    generateBtn.style.display = "none";
+    const viewBtn = document.createElement("a");
+    viewBtn.href = pendingReview.completed_job.result_url;
+    viewBtn.target = "_blank";
+    viewBtn.className = "btn-primary injected-view-btn";
+    viewBtn.textContent = "▶ View Ad";
+    viewBtn.style.display = "block";
+    viewBtn.style.textAlign = "center";
+    viewBtn.style.textDecoration = "none";
+    generateBtn.insertAdjacentElement("afterend", viewBtn);
+  } else {
+    generateBtn.style.display = "block";
+    // Remove any previously added view buttons
+    document.querySelectorAll(".btn-primary[href]").forEach(el => el.remove());
+  }
+  pollActiveJob();
 }
 
 async function pollClassification() {
@@ -553,7 +700,6 @@ function initDragAndDrop() {
 
 // Generate button
 generateBtn.addEventListener("click", async () => {
-  // Immediately disable and show feedback
   generateBtn.disabled = true;
   generateBtn.textContent = "Adding to queue...";
   generateBtn.style.background = "#6b7280";
@@ -572,18 +718,22 @@ generateBtn.addEventListener("click", async () => {
     return;
   }
 
+  // Read selected video type
+  const videoType = document.getElementById("videoTypeSelect")?.value || "walkaround";
+
   const { pending_review } = await chrome.storage.local.get("pending_review");
   if (!pending_review) return;
 
   const vehicle = {
     ...pending_review.vehicle,
     photos: pending_review.vehicle.photos,
-    photos_for_video: allPhotos,   // ← reviewed and ordered photos
+    photos_for_video: allPhotos,
   };
 
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
+    video_type: videoType,    // ← pass to background
   });
 
   await chrome.storage.local.remove("pending_review");

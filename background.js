@@ -187,7 +187,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "QUEUE_REVIEWED") {
-    addToQueue(message.vehicle)
+    addToQueue(message.vehicle, message.video_type || "walkaround")
       .then(result => sendResponse({ success: true, queueLength: result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -508,11 +508,11 @@ function parseTrimFromTitle(title, year, make, model) {
 
 
 // ── Queue management ──────────────────────────────────────────
-async function addToQueue(vehicle) {
+async function addToQueue(vehicle, videoType = "walkaround") {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
 
-  // Prevent duplicate VINs in the queue
+  // Prevent duplicate VINs
   if (vehicle.vin) {
     const alreadyQueued = queue.some(j =>
       j.vehicle.vin === vehicle.vin &&
@@ -526,25 +526,23 @@ async function addToQueue(vehicle) {
   }
 
   const job = {
-    id: Date.now().toString(),
-    vehicle: vehicle,
-    theme: defaultTheme,    // ← add this line
-    status: "waiting",
-    added_at: new Date().toISOString(),
-    progress: 0,
-    label: "Waiting...",
-    error: null,
+    id:         Date.now().toString(),
+    vehicle:    vehicle,
+    theme:      defaultTheme,
+    video_type: videoType,        // ← store video type
+    status:     "waiting",
+    added_at:   new Date().toISOString(),
+    progress:   0,
+    label:      "Waiting...",
+    error:      null,
     result_url: null,
   };
 
   queue.push(job);
   await chrome.storage.local.set({ queue });
-  console.log(`OrbitAds: Queued (${vehicle.photos?.length || 0} photos). Queue: ${queue.length}`);
-
   processQueue();
   return queue.length;
 }
-
 
 async function processQueue() {
   const { queue = [], processing = false } = await chrome.storage.local.get(["queue", "processing"]);
@@ -592,8 +590,9 @@ async function realProcessing(job, queue) {
     vin: v.vin || null,
     listing_url: v.listing_url || null,
     theme: job.theme || "family",
+    video_type: job.video_type || "walkaround",   // ← add this
     car_photo_urls: v.photos_for_video?.length
-      ? JSON.stringify(v.photos_for_video)  // all reviewed photos
+      ? JSON.stringify(v.photos_for_video)
       : null,
   };
 
@@ -624,7 +623,7 @@ async function realProcessing(job, queue) {
   const MAX_WAIT = 600000; // 10 minutes
   let elapsed = 0;
 
-  while (elapsed < MAX_WAIT) {
+    while (elapsed < MAX_WAIT) {
     await sleep(POLL_INTERVAL);
     elapsed += POLL_INTERVAL;
 
@@ -636,41 +635,38 @@ async function realProcessing(job, queue) {
 
     const pollData = await pollResp.json();
 
-    // Map backend status to progress and label
     const statusMap = {
-      "pending": { progress: 5, label: "Starting pipeline..." },
-      "vin_decoding": { progress: 15, label: "Decoding VIN..." },
-      "script_generating": { progress: 35, label: "Writing ad script..." },
-      "voice_cloning": { progress: 55, label: "Cloning voice..." },
-      "avatar_generating": { progress: 75, label: "Generating avatar..." },
-      "assembling": { progress: 88, label: "Assembling video..." },
-      "completed": { progress: 100, label: "Complete!" },
-      "failed": { progress: 0, label: pollData.error_message || "Failed" },
+      "pending":           { progress: 5,   label: "Starting pipeline..." },
+      "vin_decoding":      { progress: 15,  label: "Decoding VIN..." },
+      "script_generating": { progress: 35,  label: "Writing ad script..." },
+      "voice_cloning":     { progress: 55,  label: "Cloning voice..." },
+      "avatar_generating": { progress: 75,  label: "Generating avatar..." },
+      "assembling":        { progress: 88,  label: "Assembling video..." },
+      "completed":         { progress: 100, label: "Complete!" },
+      "failed":            { progress: 0,   label: pollData.error_message || "Failed" },
     };
 
     const mapped = statusMap[pollData.status] || { progress: job.progress, label: job.label };
     job.progress = mapped.progress;
-    job.label = mapped.label;
-
+    job.label    = mapped.label;
     await saveQueue(queue);
 
     if (pollData.status === "completed") {
       job.result_url = pollData.final_video_url;
-      job.status = "completed";
-      job.progress = 100;
-      job.label = "Complete!";
-      await saveQueue(queue);
+      job.status     = "completed";
+      job.progress   = 100;
+      job.label      = "Complete!";
+      await saveQueue(queue);  // save again with result_url
       return;
     }
 
     if (pollData.status === "failed") {
       job.status = "failed";
+      job.error  = pollData.error_message || "Pipeline failed.";
       await saveQueue(queue);
       throw new Error(pollData.error_message || "Pipeline failed.");
     }
   }
-
-  throw new Error("Timed out waiting for video generation.");
 }
 
 

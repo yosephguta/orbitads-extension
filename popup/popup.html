@@ -58,6 +58,7 @@
   <!-- ── Queue screen ─────────────────────────────────── -->
   <div class="screen" id="queueScreen" style="display:none">
     <div id="resumeBanner" class="resume-banner" style="display:none"></div>
+    <div id="soldBanner" class="sold-banner" style="display:none"></div>
     <div class="queue-header">
       <span id="queueCount"></span>
       <button class="btn-link" id="clearDoneBtn">Clear completed</button>
@@ -106,7 +107,9 @@
         <div class="fb-bar-fill" id="fbBarFill"></div>
       </div>
     </div>
-
+    <div class="fb-success-banner" id="fbSuccessBanner">
+      ✓ Listing details copied to clipboard — paste into Facebook description
+    </div>
     <div id="reviewSections"></div>
 
     <div class="review-actions">
@@ -122,6 +125,9 @@
           <input type="file" id="uploadInput" accept="image/*" multiple style="display:none">
           + Upload photos
         </label>
+        <button class="btn-facebook" id="facebookBtn" disabled>
+          📘 Post to Facebook
+        </button>
         <button class="btn-primary" id="generateBtn" disabled>
           Classifying...
         </button>
@@ -129,6 +135,59 @@
     </div>
     <!-- Facebook photo counter bar -->
 
+  </div>
+  <!-- ── Facebook listing preview screen ──────────────────── -->
+  <div class="screen" id="fbListingScreen" style="display:none">
+    <div class="review-header">
+      <div class="review-header-top">
+        <button class="btn-back" id="fbBackBtn">← Back</button>
+        <div class="review-title" id="fbListingTitle"></div>
+      </div>
+      <div class="review-meta" id="fbListingMeta"></div>
+    </div>
+
+    <div class="fb-listing-field">
+      <div class="fb-field-label">
+        Title
+        <button class="btn-copy" data-target="fbTitleText">Copy</button>
+      </div>
+      <div class="fb-field-value" id="fbTitleText"></div>
+    </div>
+
+    <div class="fb-listing-field">
+      <div class="fb-field-label">
+        Price
+        <button class="btn-copy" data-target="fbPriceText">Copy</button>
+      </div>
+      <div class="fb-field-value" id="fbPriceText"></div>
+    </div>
+
+    <div class="fb-listing-field">
+      <div class="fb-field-label">
+        Description
+        <button class="btn-copy" data-target="fbDescText">Copy</button>
+      </div>
+      <div class="fb-field-value fb-field-desc" id="fbDescText"></div>
+    </div>
+
+    <div class="fb-listing-field">
+      <div class="fb-field-label">Tags</div>
+      <div class="fb-tags-wrap" id="fbTagsWrap"></div>
+    </div>
+
+    <div class="fb-posting-status" id="fbPostingStatus" style="display:none">
+      <div class="fb-status-label" id="fbStatusLabel"></div>
+      <div class="fb-queue-list" id="fbQueueList"></div>
+    </div>
+
+    <div class="fb-listing-actions">
+      <button class="btn-facebook" id="openFbBtn">
+        📘 Open Facebook + Fill Form
+      </button>
+      <button class="btn-secondary" id="copyAllBtn">
+        📋 Copy All to Clipboard
+      </button>
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>

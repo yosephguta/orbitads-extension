@@ -669,6 +669,229 @@ async function realProcessing(job, queue) {
   }
 }
 
+// ── Facebook posting queue ────────────────────────────────────
+const FB_MIN_GAP_MS = 7 * 60 * 1000;   // 7 minutes minimum
+const FB_MAX_GAP_MS = 12 * 60 * 1000;  // 12 minutes maximum
+const FB_MAX_PER_DAY = 10;
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // ... existing handlers ...
+
+  if (message.type === "ADD_TO_FB_QUEUE") {
+    addToFbQueue(message.listing, message.vehicle)
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "FB_POSTED_CONFIRM") {
+    confirmFbPosted(message.listing_id)
+      .then(() => sendResponse({ success: true }));
+    return true;
+  }
+});
+
+async function addToFbQueue(listing, vehicle) {
+  const { fb_post_queue = [], fb_posting_history = [] } =
+    await chrome.storage.local.get(["fb_post_queue", "fb_posting_history"]);
+
+  // Check daily limit
+  const today       = new Date().toDateString();
+  const todayPosts  = fb_posting_history.filter(
+    p => new Date(p.timestamp).toDateString() === today
+  ).length;
+
+  if (todayPosts >= FB_MAX_PER_DAY) {
+    console.log("OrbitAds: Daily Facebook posting limit reached");
+    return;
+  }
+
+  const item = {
+    id:         Date.now().toString(),
+    listing:    listing,
+    vehicle:    vehicle,
+    status:     "waiting",
+    added_at:   new Date().toISOString(),
+    post_after: calculateNextPostTime(fb_post_queue, fb_posting_history),
+  };
+
+  fb_post_queue.push(item);
+  await chrome.storage.local.set({ fb_post_queue });
+
+  console.log(`OrbitAds FB Queue: Added ${vehicle.year} ${vehicle.make} ${vehicle.model}. Post after: ${new Date(item.post_after).toLocaleTimeString()}`);
+
+  // Open Facebook now if this is the first item and it's ready
+  processFbQueue();
+}
+
+function calculateNextPostTime(queue, history) {
+  const now = Date.now();
+
+  // Find last post time from either queue or history
+  const lastFromQueue   = queue.filter(j => j.status === "posted")
+    .map(j => new Date(j.posted_at).getTime())
+    .sort((a, b) => b - a)[0];
+
+  const lastFromHistory = history
+    .map(h => new Date(h.timestamp).getTime())
+    .sort((a, b) => b - a)[0];
+
+  const lastPost = Math.max(lastFromQueue || 0, lastFromHistory || 0);
+
+  if (!lastPost || now - lastPost > FB_MAX_GAP_MS) {
+    // No recent posts — can post now (with small delay)
+    return now + 3000;
+  }
+
+  // Calculate random gap between 7-12 minutes from last post
+  const gap      = FB_MIN_GAP_MS + Math.random() * (FB_MAX_GAP_MS - FB_MIN_GAP_MS);
+  const postTime = lastPost + gap;
+
+  return Math.max(postTime, now + 3000);
+}
+
+async function processFbQueue() {
+  const { fb_post_queue = [] } = await chrome.storage.local.get("fb_post_queue");
+  const now = Date.now();
+
+  // Find next item ready to post
+  const nextItem = fb_post_queue.find(
+    j => j.status === "waiting" && new Date(j.post_after).getTime() <= now
+  );
+
+  if (!nextItem) {
+    // Schedule check for when next item is ready
+    const nextReady = fb_post_queue
+      .filter(j => j.status === "waiting")
+      .map(j => new Date(j.post_after).getTime())
+      .sort((a, b) => a - b)[0];
+
+    if (nextReady) {
+      const delay = nextReady - now + 1000;
+      console.log(`OrbitAds FB: Next post in ${Math.round(delay/60000)} minutes`);
+      setTimeout(processFbQueue, delay);
+    }
+    return;
+  }
+
+  // Mark as posting
+  nextItem.status = "posting";
+  await chrome.storage.local.set({ fb_post_queue });
+
+  // Store the listing data for the content script
+  await chrome.storage.local.set({
+  fb_listing: {
+    ...nextItem.listing,
+    vehicle:         nextItem.vehicle,
+    reviewed_photos: nextItem.listing.reviewed_photos || [],
+    queue_item_id:   nextItem.id,
+    created_at:      new Date().toISOString(),
+  }
+});
+
+  // Open Facebook Marketplace create vehicle page
+  chrome.tabs.create({
+    url: "https://www.facebook.com/marketplace/create/vehicle",
+  });
+
+  console.log(`OrbitAds FB: Opening Facebook for ${nextItem.vehicle.year} ${nextItem.vehicle.make} ${nextItem.vehicle.model}`);
+}
+
+async function confirmFbPosted(queueItemId) {
+  const { fb_post_queue = [], fb_posting_history = [] } =
+    await chrome.storage.local.get(["fb_post_queue", "fb_posting_history"]);
+
+  const item = fb_post_queue.find(j => j.id === queueItemId);
+  if (item) {
+    item.status    = "posted";
+    item.posted_at = new Date().toISOString();
+  }
+
+  // Add to history for rate limiting
+  fb_posting_history.push({
+    timestamp: new Date().toISOString(),
+    vin:       item?.vehicle?.vin,
+  });
+
+  // Keep only last 30 days of history
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const cleanHistory = fb_posting_history.filter(
+    h => new Date(h.timestamp).getTime() > cutoff
+  );
+
+  await chrome.storage.local.set({
+    fb_post_queue:      fb_post_queue,
+    fb_posting_history: cleanHistory,
+  });
+
+  // Process next item in queue
+  setTimeout(processFbQueue, 1000);
+}
+
+// ── Daily sold vehicle checker ────────────────────────────────
+async function runDailySoldCheck() {
+  const { token, last_sold_check } = await chrome.storage.local.get([
+    "token", "last_sold_check"
+  ]);
+
+  if (!token) return;
+
+  // Only run once per day
+  const now       = Date.now();
+  const oneDayMs  = 24 * 60 * 60 * 1000;
+  if (last_sold_check && now - last_sold_check < oneDayMs) return;
+
+  try {
+    // Get user's listings from backend
+    const listingsResp = await fetch(`${API_BASE}/listings/`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!listingsResp.ok) return;
+
+    const listings = await listingsResp.json();
+    const activeIds = listings
+      .filter(l => !l.is_sold && l.listing_url)
+      .map(l => l.id);
+
+    if (activeIds.length === 0) return;
+
+    // Check sold status
+    const checkResp = await fetch(`${API_BASE}/listings/check-sold`, {
+      method:  "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({ listing_ids: activeIds }),
+    });
+
+    if (!checkResp.ok) return;
+
+    const { sold_ids } = await checkResp.json();
+
+    if (sold_ids.length > 0) {
+      // Store sold notifications for popup to display
+      await chrome.storage.local.set({
+        sold_notifications: sold_ids,
+      });
+
+      // Show badge on extension icon
+      chrome.action.setBadgeText({ text: "!" });
+      chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
+
+      console.log(`OrbitAds: ${sold_ids.length} vehicles may be sold`);
+    }
+
+    await chrome.storage.local.set({ last_sold_check: now });
+
+  } catch (err) {
+    console.error("OrbitAds: Sold check failed:", err);
+  }
+}
+
+// Run sold check on extension startup and every 6 hours
+runDailySoldCheck();
+setInterval(runDailySoldCheck, 6 * 60 * 60 * 1000);
 
 async function saveQueue(queue) {
   await chrome.storage.local.set({ queue });

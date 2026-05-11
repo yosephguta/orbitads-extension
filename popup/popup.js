@@ -12,8 +12,8 @@
 
 // ── Config ────────────────────────────────────────────────────
 // Change to https://api.dealersorbit.com when deployed
+// ── Config ────────────────────────────────────────────────────
 const API_BASE = "http://localhost:8000/api/v1";
-
 
 // ── Elements ──────────────────────────────────────────────────
 const loginScreen = document.getElementById("loginScreen");
@@ -28,7 +28,57 @@ const clearDoneBtn = document.getElementById("clearDoneBtn");
 const jobList = document.getElementById("jobList");
 const queueCount = document.getElementById("queueCount");
 const backBtn = document.getElementById("backBtn");
+const reviewScreen = document.getElementById("reviewScreen");
+const reviewTitle = document.getElementById("reviewTitle");
+const reviewMeta = document.getElementById("reviewMeta");
+const reviewStatus = document.getElementById("reviewStatus");
+const reviewSections = document.getElementById("reviewSections");
+const generateBtn = document.getElementById("generateBtn");
+const uploadInput = document.getElementById("uploadInput");
+const facebookBtn = document.getElementById("facebookBtn");
+const fbSuccessBanner = document.getElementById("fbSuccessBanner");
+const fbListingScreen = document.getElementById("fbListingScreen") || document.createElement("div");
+const fbBackBtn = document.getElementById("fbBackBtn") || document.createElement("button");
+const fbListingTitle = document.getElementById("fbListingTitle") || document.createElement("div");
+const fbListingMeta = document.getElementById("fbListingMeta") || document.createElement("div");
+const fbTitleText = document.getElementById("fbTitleText") || document.createElement("div");
+const fbPriceText = document.getElementById("fbPriceText") || document.createElement("div");
+const fbDescText = document.getElementById("fbDescText") || document.createElement("div");
+const fbTagsWrap = document.getElementById("fbTagsWrap") || document.createElement("div");
+const fbPostingStatus = document.getElementById("fbPostingStatus") || document.createElement("div");
+const fbStatusLabel = document.getElementById("fbStatusLabel") || document.createElement("div");
+const fbQueueList = document.getElementById("fbQueueList") || document.createElement("div");
+const openFbBtn = document.getElementById("openFbBtn") || document.createElement("button");
+const copyAllBtn = document.getElementById("copyAllBtn") || document.createElement("button");
+
+// ── State ──────────────────────────────────────────────────────
+let currentFbListing = null;
 let queueInterval = null;
+let reviewPhotos = { exterior: [], interior: [], other: [] };
+let reviewVehicle = null;
+let activeJobPolling = false;
+
+// ... rest of the file (all functions and event listeners)
+// ... init() call stays at the very bottom
+
+
+
+// Copy button handlers — work for any btn-copy button
+document.addEventListener("click", async (e) => {
+  if (!e.target.classList.contains("btn-copy")) return;
+  const targetId = e.target.dataset.target;
+  const el = document.getElementById(targetId);
+  if (!el) return;
+
+  await navigator.clipboard.writeText(el.textContent);
+  e.target.textContent = "Copied!";
+  e.target.classList.add("copied");
+  setTimeout(() => {
+    e.target.textContent = "Copy";
+    e.target.classList.remove("copied");
+  }, 2000);
+});
+
 
 backBtn.addEventListener("click", async () => {
   // Don't remove pending_review — just go back to queue
@@ -38,6 +88,10 @@ backBtn.addEventListener("click", async () => {
   renderQueue();
   if (queueInterval) clearInterval(queueInterval);
   queueInterval = setInterval(renderQueue, 2000);
+});
+
+fbBackBtn.addEventListener("click", () => {
+  showScreen(reviewScreen);
 });
 
 // ── Init ──────────────────────────────────────────────────────
@@ -58,13 +112,42 @@ async function init() {
   }
 }
 
+function showFbListingScreen(listing, vehicle) {
+  currentFbListing = { listing, vehicle };
+
+  // Header
+  const title = [vehicle.year, vehicle.make?.toUpperCase(), vehicle.model, vehicle.trim]
+    .filter(Boolean).join(" ");
+  fbListingTitle.textContent = title || "Vehicle Listing";
+  fbListingMeta.textContent = [
+    vehicle.vin ? `VIN: ${vehicle.vin}` : null,
+    vehicle.price,
+    vehicle.mileage,
+  ].filter(Boolean).join(" · ");
+
+  // Fields
+  fbTitleText.textContent = listing.title;
+  fbPriceText.textContent = listing.price?.replace(/[^0-9]/g, "") || "";
+  fbDescText.textContent = listing.description;
+
+  // Tags
+  fbTagsWrap.innerHTML = (listing.tags || [])
+    .map(tag => `<span class="fb-tag">#${tag}</span>`)
+    .join("");
+
+  // Check posting queue status
+  renderFbQueueStatus();
+
+  showScreen(fbListingScreen);
+}
+
 
 // ── Screen management ─────────────────────────────────────────
 function showScreen(screen) {
-  [loginScreen, emptyScreen, queueScreen, reviewScreen].forEach(s => s.style.display = "none");
+  [loginScreen, emptyScreen, queueScreen, reviewScreen, fbListingScreen]
+    .forEach(s => s.style.display = "none");
   screen.style.display = "block";
 }
-
 function showLoggedIn(user) {
   userInfo.style.display = "flex";
   userName.textContent = user.full_name?.split(" ")[0] || user.email;
@@ -169,6 +252,24 @@ async function renderQueue() {
     });
   } else if (resumeBanner) {
     resumeBanner.style.display = "none";
+  }
+
+  // Show sold vehicle notifications
+  const { sold_notifications = [] } = await chrome.storage.local.get("sold_notifications");
+  const soldBanner = document.getElementById("soldBanner");
+  if (sold_notifications.length > 0 && soldBanner) {
+    soldBanner.style.display = "flex";
+    soldBanner.innerHTML = `
+    <span>🚨 ${sold_notifications.length} vehicle${sold_notifications.length > 1 ? 's' : ''} may be sold — check your Facebook listings</span>
+    <button class="btn-small" id="dismissSoldBtn">Dismiss</button>
+  `;
+    document.getElementById("dismissSoldBtn")?.addEventListener("click", async () => {
+      await chrome.storage.local.remove("sold_notifications");
+      chrome.action.setBadgeText({ text: "" });
+      soldBanner.style.display = "none";
+    });
+  } else if (soldBanner) {
+    soldBanner.style.display = "none";
   }
 
   if (queue.length === 0) {
@@ -299,17 +400,8 @@ function renderJobCard(job) {
 }
 
 // ── Review screen ─────────────────────────────────────────────
-const reviewScreen = document.getElementById("reviewScreen");
-const reviewTitle = document.getElementById("reviewTitle");
-const reviewMeta = document.getElementById("reviewMeta");
-const reviewStatus = document.getElementById("reviewStatus");
-const reviewSections = document.getElementById("reviewSections");
-const generateBtn = document.getElementById("generateBtn");
-const uploadInput = document.getElementById("uploadInput");
 
 // Track user's selected photos for video
-let reviewPhotos = { exterior: [], interior: [], other: [] };
-let reviewVehicle = null;
 
 async function checkPendingReview() {
   const { pending_review } = await chrome.storage.local.get("pending_review");
@@ -377,9 +469,6 @@ function buildReviewPhotos(classified, photosAll, blockedPhotos = [], explicitOt
 
   return photos;
 }
-
-
-let activeJobPolling = false;
 
 async function pollActiveJob() {
   if (activeJobPolling) return;  // already polling
@@ -481,6 +570,7 @@ function showReviewScreen(pendingReview) {
 
     renderPhotoSections();
     generateBtn.disabled = false;
+    document.getElementById("facebookBtn").disabled = false;
     generateBtn.textContent = "Generate Ad →";
   }
   else {
@@ -493,6 +583,11 @@ function showReviewScreen(pendingReview) {
   }
 
   showScreen(reviewScreen);
+
+  if (pendingReview.view_only && pendingReview.review_photos) {
+    // Populate reviewPhotos so facebookBtn can use it
+    reviewPhotos = pendingReview.review_photos;
+  }
 
   if (pendingReview.view_only && pendingReview.completed_job?.result_url) {
     generateBtn.style.display = "none";
@@ -531,6 +626,7 @@ async function pollClassification() {
       renderPhotoSections();
       updateFbBar();
       generateBtn.disabled = false;
+      document.getElementById("facebookBtn").disabled = false;
       generateBtn.textContent = "Generate Ad →";
     }
   }, 2000);
@@ -744,6 +840,144 @@ generateBtn.addEventListener("click", async () => {
   queueInterval = setInterval(renderQueue, 2000);
 });
 
+// ── Facebook listing button ───────────────────────────────────
+
+facebookBtn.addEventListener("click", async () => {
+  console.log("OrbitAds: reviewPhotos state:", {
+    exterior: reviewPhotos.exterior?.length,
+    interior: reviewPhotos.interior?.length,
+    additional: reviewPhotos.additional?.length,
+  });
+  facebookBtn.disabled = true;
+  facebookBtn.textContent = "Generating listing...";
+
+  try {
+    const { token, pending_review } = await chrome.storage.local.get(["token", "pending_review"]);
+    const v = reviewVehicle;
+    if (!v) { alert("No vehicle data found."); return; }
+
+    // Get reviewed photos from current reviewPhotos state
+    // or fall back to pending_review.review_photos
+    const sourcePhotos = (reviewPhotos.exterior?.length || reviewPhotos.interior?.length)
+      ? reviewPhotos
+      : pending_review?.review_photos;
+
+    const reviewedPhotosList = [
+      ...(sourcePhotos?.exterior || []),
+      ...(sourcePhotos?.interior || []),
+      ...(sourcePhotos?.additional || []),
+    ];
+
+    console.log("OrbitAds: Reviewed photos for FB:", reviewedPhotosList.length);
+
+    const resp = await fetch(`${API_BASE}/listings/generate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        year: v.year,
+        make: v.make,
+        model: v.model,
+        trim: v.trim,
+        price: v.price,
+        mileage: v.mileage,
+        vin: v.vin,
+        dealership_name: v.dealership,
+        listing_url: v.listing_url,
+      }),
+    });
+
+    if (!resp.ok) throw new Error("Failed to generate listing");
+    const listing = await resp.json();
+
+    await chrome.storage.local.set({
+      fb_listing: {
+        ...listing,
+        vehicle: v,
+        reviewed_photos: reviewedPhotosList,
+        created_at: new Date().toISOString(),
+      }
+    });
+
+    showFbListingScreen(listing, v);
+
+  } catch (err) {
+    console.error("Facebook listing error:", err);
+    alert("Failed to generate listing. Please try again.");
+  } finally {
+    facebookBtn.disabled = false;
+    facebookBtn.textContent = "📘 Post to Facebook";
+  }
+});
+
+openFbBtn.addEventListener("click", async () => {
+  if (!currentFbListing) return;
+
+  // Get current reviewed photos
+  const reviewedPhotosList = [
+    ...(reviewPhotos.exterior   || []),
+    ...(reviewPhotos.interior   || []),
+    ...(reviewPhotos.additional || []),
+  ];
+
+  // Update fb_listing with reviewed photos before opening Facebook
+  const { fb_listing } = await chrome.storage.local.get("fb_listing");
+  if (fb_listing) {
+    fb_listing.reviewed_photos = reviewedPhotosList.length > 0
+      ? reviewedPhotosList
+      : currentFbListing.listing.reviewed_photos || [];
+    await chrome.storage.local.set({ fb_listing });
+  }
+
+  await chrome.runtime.sendMessage({
+    type:    "ADD_TO_FB_QUEUE",
+    listing: { ...currentFbListing.listing, reviewed_photos: reviewedPhotosList },
+    vehicle: currentFbListing.vehicle,
+  });
+
+  renderFbQueueStatus();
+});
+
+copyAllBtn.addEventListener("click", async () => {
+  if (!currentFbListing) return;
+  const { listing } = currentFbListing;
+  const text = `TITLE: ${listing.title}\n\nPRICE: ${listing.price}\n\nDESCRIPTION:\n${listing.description}\n\nTAGS: ${(listing.tags || []).map(t => '#' + t).join(' ')}`;
+  await navigator.clipboard.writeText(text);
+  copyAllBtn.textContent = "✓ Copied!";
+  setTimeout(() => { copyAllBtn.textContent = "📋 Copy All to Clipboard"; }, 2000);
+});
+
+async function renderFbQueueStatus() {
+  const { fb_post_queue = [] } = await chrome.storage.local.get("fb_post_queue");
+  if (fb_post_queue.length === 0) {
+    fbPostingStatus.style.display = "none";
+    return;
+  }
+
+  fbPostingStatus.style.display = "block";
+  const active = fb_post_queue.filter(j => j.status !== "posted").length;
+  fbStatusLabel.textContent = `${active} in posting queue`;
+
+  fbQueueList.innerHTML = fb_post_queue.slice(-5).map(item => {
+    const v = item.vehicle;
+    const title = [v.year, v.make?.toUpperCase(), v.model].filter(Boolean).join(" ");
+    const statusClass = `fb-queue-status-${item.status}`;
+    const statusText = {
+      waiting: "⏳ Waiting",
+      posting: "📘 Opening...",
+      posted: "✓ Posted",
+      failed: "✕ Failed",
+    }[item.status] || item.status;
+
+    return `<div class="fb-queue-item">
+      <span>${title}</span>
+      <span class="${statusClass}">${statusText}</span>
+    </div>`;
+  }).join("");
+}
+
 // Upload handler
 uploadInput.addEventListener("change", (e) => {
   Array.from(e.target.files).forEach(file => {
@@ -755,3 +989,5 @@ uploadInput.addEventListener("change", (e) => {
 
 // ── Start ──────────────────────────────────────────────────────
 init();
+
+

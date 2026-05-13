@@ -7,6 +7,11 @@
  *   3. Queue processing — sends jobs to OrbitAds backend one at a time
  */
 
+// Open side panel when extension icon is clicked
+chrome.action.onClicked.addListener((tab) => {
+  chrome.sidePanel.open({ tabId: tab.id });
+});
+
 // ── Inline configs ────────────────────────────────────────────
 const PROVIDER_CONFIGS = {
   dealer_inspire: {

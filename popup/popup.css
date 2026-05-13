@@ -1,50 +1,102 @@
-/* ── Reset & base ─────────────────────────────────────── */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Reset & base ─────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
 body {
-  width: 340px;
-  min-height: 200px;
+  width: 100%;
+  min-width: 360px;
+  height: 100vh;
+  overflow-y: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   color: #1a1a2e;
-  background: #ffffff;
+  background: #f8fafc;
 }
 
-/* ── Header ───────────────────────────────────────────── */
+/* ── Header ───────────────────────────────────────────────── */
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 10px 16px;
   background: #1a56db;
   color: white;
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
 .logo {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.5px;
 }
 
-.logo-orbit { color: #ffffff; }
-.logo-ads   { color: #93c5fd; }
+.logo-orbit {
+  color: #ffffff;
+}
 
-.user-info {
+.logo-ads {
+  color: #93c5fd;
+}
+
+.header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  color: #bfdbfe;
 }
 
-/* ── Screens ──────────────────────────────────────────── */
+.user-info {
+  font-size: 12px;
+  color: #bfdbfe;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.header-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* ── Screens ──────────────────────────────────────────────── */
 .screen {
   padding: 16px;
 }
 
+/* ── Login ────────────────────────────────────────────────── */
+.login-logo {
+  text-align: center;
+  margin: 24px 0 8px;
+}
+
 .screen-subtitle {
+  text-align: center;
   color: #6b7280;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
   font-size: 13px;
 }
 
@@ -61,7 +113,6 @@ body {
   text-decoration: none;
 }
 
-/* ── Login form ───────────────────────────────────────── */
 .form-group {
   margin-bottom: 12px;
 }
@@ -81,6 +132,7 @@ body {
   border-radius: 6px;
   font-size: 13px;
   outline: none;
+  background: white;
   transition: border-color 0.15s;
 }
 
@@ -96,7 +148,286 @@ body {
   margin-bottom: 8px;
 }
 
-/* ── Buttons ──────────────────────────────────────────── */
+/* ── Stats bar ────────────────────────────────────────────── */
+.stats-bar {
+  display: flex;
+  background: white;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.stat {
+  flex: 1;
+  padding: 10px 8px;
+  text-align: center;
+  border-right: 1px solid #f3f4f6;
+}
+
+.stat:last-child {
+  border-right: none;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1a56db;
+  line-height: 1;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: #9ca3af;
+  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* ── Section headers ──────────────────────────────────────── */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 14px 0 8px;
+}
+
+.section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.section-meta {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.btn-link-sm {
+  background: none;
+  border: none;
+  color: #6b7280;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-link-sm:hover {
+  color: #374151;
+}
+
+/* ── Settings row ─────────────────────────────────────────── */
+.settings-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.setting-item {
+  flex: 1;
+}
+
+.setting-item label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.setting-item select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  background: white;
+  outline: none;
+  cursor: pointer;
+}
+
+/* ── Job cards ────────────────────────────────────────────── */
+.job-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.job-card:hover {
+  border-color: #1a56db;
+}
+
+.job-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+
+.job-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #111827;
+  flex: 1;
+  margin-right: 8px;
+}
+
+.job-title-link {
+  text-decoration: underline;
+  text-decoration-color: #d1d5db;
+}
+
+.job-title-link:hover {
+  color: #1a56db;
+}
+
+.job-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-bottom: 4px;
+}
+
+.job-price {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.job-label {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 3px;
+}
+
+.job-actions {
+  margin-top: 6px;
+}
+
+/* Progress bar */
+.progress-wrap {
+  background: #f3f4f6;
+  border-radius: 99px;
+  height: 5px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 99px;
+  background: #1a56db;
+  transition: width 0.4s ease;
+}
+
+.progress-bar.done {
+  background: #16a34a;
+}
+
+.progress-bar.failed {
+  background: #dc2626;
+}
+
+/* Badges */
+.badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 99px;
+  white-space: nowrap;
+}
+
+.badge-waiting {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.badge-generating {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.badge-done {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.badge-failed {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* ── Recent ads ───────────────────────────────────────────── */
+.recent-ad-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recent-ad-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.recent-ad-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-ad-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
+
+.recent-ad-sold {
+  font-size: 10px;
+  color: #dc2626;
+  font-weight: 600;
+  background: #fee2e2;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* ── Empty state ──────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  padding: 20px 16px;
+}
+
+.empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.empty-title {
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.empty-hint {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ── Buttons ──────────────────────────────────────────────── */
 .btn-primary {
   width: 100%;
   padding: 9px;
@@ -110,17 +441,67 @@ body {
   transition: background 0.15s;
 }
 
-.btn-primary:hover    { background: #1e40af; }
-.btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+.btn-primary:hover {
+  background: #1e40af;
+}
 
-.btn-link {
-  background: none;
+.btn-primary:disabled {
+  background: #93c5fd;
+  cursor: not-allowed;
+}
+
+.btn-facebook {
+  flex: 1;
+  padding: 9px;
+  background: #1877f2;
+  color: white;
   border: none;
-  color: #bfdbfe;
-  font-size: 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  padding: 0;
-  text-decoration: underline;
+  transition: background 0.15s;
+}
+
+.btn-facebook:hover {
+  background: #1664d8;
+}
+
+.btn-facebook:disabled {
+  background: #93c5fd;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  width: 100%;
+  padding: 9px;
+  background: white;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: #f9fafb;
+}
+
+.btn-danger {
+  width: 100%;
+  padding: 9px;
+  background: white;
+  color: #dc2626;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  background: #fee2e2;
 }
 
 .btn-small {
@@ -136,148 +517,79 @@ body {
   display: inline-block;
 }
 
-.btn-small:hover { background: #1e40af; }
-
-/* ── Theme Row ──────────────────────────────────────── */
-
-.theme-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  font-size: 12px;
-  color: #6b7280;
+.btn-small:hover {
+  background: #1e40af;
 }
 
-.theme-row select {
-  flex: 1;
-  padding: 4px 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
+.btn-back {
+  background: none;
+  border: none;
+  color: #6b7280;
   font-size: 12px;
-  outline: none;
   cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
 }
 
-/* ── Empty state ──────────────────────────────────────── */
-.empty-icon  { font-size: 32px; text-align: center; margin-bottom: 8px; }
-.empty-title { text-align: center; font-weight: 600; margin-bottom: 6px; }
-.empty-hint  {
-  text-align: center;
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-/* ── Queue ────────────────────────────────────────────── */
-.queue-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-#queueCount {
-  font-size: 12px;
-  font-weight: 600;
-  color: #6b7280;
-}
-
-/* ── Job card ─────────────────────────────────────────── */
-.job-card {
-  padding: 10px 0;
-  border-bottom: 1px solid #f3f4f6;
-}
-
-.job-card:last-child { border-bottom: none; }
-
-.job-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 6px;
-}
-
-.job-title {
-  font-weight: 600;
-  font-size: 12px;
+.btn-back:hover {
   color: #111827;
-  line-height: 1.3;
-  flex: 1;
-  margin-right: 8px;
 }
 
-.job-price {
+.btn-link {
+  background: none;
+  border: none;
+  color: #bfdbfe;
   font-size: 11px;
-  color: #6b7280;
-  white-space: nowrap;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
 }
 
-.job-meta {
-  font-size: 11px;
-  color: #9ca3af;
-  margin-bottom: 6px;
-}
-
-/* Progress bar */
-.progress-wrap {
-  background: #f3f4f6;
-  border-radius: 99px;
-  height: 5px;
-  margin-bottom: 4px;
-  overflow: hidden;
-}
-
-.progress-bar {
-  height: 100%;
-  border-radius: 99px;
-  background: #1a56db;
-  transition: width 0.4s ease;
-}
-
-.progress-bar.done   { background: #16a34a; }
-.progress-bar.failed { background: #dc2626; }
-
-.job-label {
-  font-size: 11px;
-  color: #6b7280;
-}
-
-/* Status badges */
-.badge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 99px;
-  white-space: nowrap;
-}
-
-.badge-waiting    { background: #f3f4f6; color: #6b7280; }
-.badge-generating { background: #dbeafe; color: #1d4ed8; }
-.badge-done       { background: #dcfce7; color: #15803d; }
-.badge-failed     { background: #fee2e2; color: #dc2626; }
-
-/* Job actions */
-.job-actions {
-  margin-top: 6px;
+/* ── Banners ──────────────────────────────────────────────── */
+.sold-banner {
   display: flex;
-  gap: 6px;
+  justify-content: space-between;
   align-items: center;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.resume-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #1e40af;
 }
 
 /* ── Review screen ────────────────────────────────────────── */
 .review-header {
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #f3f4f6;
+  margin-bottom: 12px;
+}
+
+.review-header-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
 }
 
 .review-title {
   font-weight: 700;
   font-size: 13px;
   color: #111827;
+  flex: 1;
 }
 
 .review-meta {
@@ -311,6 +623,8 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  min-height: 30px;
+  padding: 4px;
 }
 
 .photo-thumb {
@@ -327,6 +641,11 @@ body {
   border-color: #1a56db;
 }
 
+.photo-thumb.drag-over {
+  border-color: #1a56db;
+  transform: scale(1.05);
+}
+
 .photo-thumb img {
   width: 100%;
   height: 100%;
@@ -339,76 +658,36 @@ body {
   right: 2px;
   width: 16px;
   height: 16px;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.6);
   color: white;
   border: none;
   border-radius: 50%;
   font-size: 10px;
-  line-height: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.review-actions {
+.drop-zone {
+  width: 72px;
+  height: 54px;
+  border: 2px dashed #d1d5db;
+  border-radius: 4px;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 10px 16px 16px;
-  border-top: 1px solid #f3f4f6;
-  background: white;
-  position: sticky;
-  bottom: 0;
-  z-index: 10;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #9ca3af;
 }
 
-.review-actions-buttons {
-  display: flex;
-  gap: 8px;
-}
-
-.upload-label {
-  flex: 1;
-  text-align: center;
-  padding: 7px;
-  border: 1px dashed #d1d5db;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #6b7280;
-  cursor: pointer;
-}
-
-.upload-label:hover {
+.drop-zone.drag-over-grid {
   border-color: #1a56db;
+  background: #eff6ff;
   color: #1a56db;
 }
 
-#generateBtn {
-  flex: 1;
-}
-
-.review-header-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.btn-back {
-  background: none;
-  border: none;
-  color: #6b7280;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0;
-  white-space: nowrap;
-}
-
-.btn-back:hover { color: #111827; }
-
-/* ── Facebook photo bar ───────────────────────────────────── */
+/* Facebook bar */
 .fb-bar-wrap {
   margin-bottom: 12px;
   padding: 8px 10px;
@@ -440,68 +719,30 @@ body {
   transition: width 0.3s ease, background 0.3s ease;
 }
 
-.fb-bar-fill.over { background: #dc2626; }
-
-.photo-thumb.drag-over {
-  border-color: #1a56db;
-  transform: scale(1.05);
+.fb-bar-fill.over {
+  background: #dc2626;
 }
 
-.photo-grid.drag-over-grid {
-  background: #eff6ff;
-  border: 1px dashed #1a56db;
-  border-radius: 6px;
-  min-height: 40px;
-}
-
-.resume-banner {
+/* Review actions */
+.review-actions {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  font-size: 12px;
-  color: #1e40af;
-}
-
-.photo-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-height: 30px;   /* ← add this line */
-  padding: 4px;
-}
-
-.drop-zone {
-  width: 72px;
-  height: 54px;
-  border: 2px dashed #d1d5db;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  color: #9ca3af;
-  cursor: default;
-}
-
-.drop-zone.drag-over-grid {
-  border-color: #1a56db;
-  background: #eff6ff;
-  color: #1a56db;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 0 16px;
+  border-top: 1px solid #f3f4f6;
+  position: sticky;
+  bottom: 0;
+  background: white;
+  z-index: 10;
 }
 
 .video-type-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
   font-size: 12px;
   color: #374151;
-  width: 100%;
 }
 
 .video-type-row label {
@@ -511,31 +752,45 @@ body {
 
 .video-type-row select {
   flex: 1;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border: 1px solid #d1d5db;
   border-radius: 6px;
   font-size: 12px;
-  outline: none;
-  cursor: pointer;
   background: white;
+  outline: none;
 }
 
-body {
-  width: 340px;
-  min-height: 200px;
-  max-height: 600px;        /* ← add this */
-  overflow-y: auto;         /* ← add this */
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 13px;
-  color: #1a1a2e;
-  background: #ffffff;
+.review-actions-buttons {
+  display: flex;
+  gap: 6px;
 }
 
-.screen {
-  padding: 16px;
-  overflow-y: auto;         /* ← add this */
+.upload-label {
+  padding: 7px 10px;
+  border: 1px dashed #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #6b7280;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
+.upload-label:hover {
+  border-color: #1a56db;
+  color: #1a56db;
+}
+
+.fb-success-banner {
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #15803d;
+  font-weight: 600;
+}
+
+/* Active job status */
 .active-job-status {
   background: #eff6ff;
   border: 1px solid #bfdbfe;
@@ -551,56 +806,13 @@ body {
   margin-bottom: 6px;
 }
 
-.job-title-link {
-  text-decoration: underline;
-  text-decoration-color: #d1d5db;
-  cursor: pointer;
-}
-
-.job-title-link:hover {
-  color: #1a56db;
-  text-decoration-color: #1a56db;
-}
-
-.job-card:hover {
-  background: #f9fafb;
-  border-radius: 6px;
-}
-
-.btn-facebook {
-  flex: 1;
-  padding: 9px;
-  background: #1877f2;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.btn-facebook:hover    { background: #1664d8; }
-.btn-facebook:disabled { background: #93c5fd; cursor: not-allowed; }
-
-.fb-success-banner {
-  background: #dcfce7;
-  border: 1px solid #86efac;
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #15803d;
-  font-weight: 600;
-  margin-bottom: 8px;
-  display: none;
-}
-
 /* ── FB Listing Preview ───────────────────────────────────── */
 .fb-listing-field {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   overflow: hidden;
+  background: white;
 }
 
 .fb-field-label {
@@ -647,7 +859,9 @@ body {
   background: #16a34a;
 }
 
-.btn-copy:hover { background: #1e40af; }
+.btn-copy:hover {
+  background: #1e40af;
+}
 
 .fb-tags-wrap {
   padding: 8px 10px;
@@ -678,27 +892,12 @@ body {
   padding-bottom: 12px;
 }
 
-.btn-secondary {
-  width: 100%;
-  padding: 9px;
-  background: white;
-  color: #374151;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.btn-secondary:hover { background: #f9fafb; }
-
-/* Posting status */
 .fb-posting-status {
   background: #eff6ff;
   border: 1px solid #bfdbfe;
   border-radius: 6px;
   padding: 10px 12px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .fb-status-label {
@@ -717,23 +916,89 @@ body {
   border-bottom: 1px solid #dbeafe;
 }
 
-.fb-queue-item:last-child { border-bottom: none; }
+.fb-queue-item:last-child {
+  border-bottom: none;
+}
 
-.fb-queue-status-waiting    { color: #6b7280; }
-.fb-queue-status-posting    { color: #1e40af; font-weight: 600; }
-.fb-queue-status-posted     { color: #16a34a; }
-.fb-queue-status-failed     { color: #dc2626; }
+.fb-queue-status-waiting {
+  color: #6b7280;
+}
 
-.sold-banner {
+.fb-queue-status-posting {
+  color: #1e40af;
+  font-weight: 600;
+}
+
+.fb-queue-status-posted {
+  color: #16a34a;
+}
+
+.fb-queue-status-failed {
+  color: #dc2626;
+}
+
+/* ── Settings screen ──────────────────────────────────────── */
+.settings-section {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.settings-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.settings-row-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #374151;
+  padding: 4px 0;
+}
+
+.settings-value {
+  color: #6b7280;
+  text-align: right;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-saved {
+  color: #16a34a;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  margin-top: 8px;
+}
+
+/* ── FB Queue in dashboard ────────────────────────────────── */
+.fb-queue-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #fee2e2;
-  border: 1px solid #fca5a5;
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 10px;
   font-size: 12px;
-  color: #dc2626;
+}
+
+.fb-queue-card-title {
   font-weight: 600;
+  color: #111827;
+}
+
+.fb-queue-card-time {
+  font-size: 11px;
+  color: #6b7280;
 }

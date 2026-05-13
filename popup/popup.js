@@ -16,9 +16,22 @@
 const API_BASE = "http://localhost:8000/api/v1";
 
 // ── Elements ──────────────────────────────────────────────────
+const dashboardScreen = document.getElementById("dashboardScreen");
+const settingsScreen = document.getElementById("settingsScreen");
+const settingsBackBtn = document.getElementById("settingsBackBtn");
+const settingsBtn = document.getElementById("settingsBtn");
+const helpBtn = document.getElementById("helpBtn");
+const siteBtn = document.getElementById("siteBtn");
+const signOutBtn = document.getElementById("signOutBtn");
+const statAdsToday = document.getElementById("statAdsToday");
+const statAdsWeek = document.getElementById("statAdsWeek");
+const statAdsTotal = document.getElementById("statAdsTotal");
+const statFbPosted = document.getElementById("statFbPosted");
+const queueEmpty = document.getElementById("queueEmpty");
+const recentAds = document.getElementById("recentAds");
+const videoTypeSelectDash = document.getElementById("videoTypeSelectDash");
 const loginScreen = document.getElementById("loginScreen");
 const emptyScreen = document.getElementById("emptyScreen");
-const queueScreen = document.getElementById("queueScreen");
 const userInfo = document.getElementById("userInfo");
 const userName = document.getElementById("userName");
 const loginError = document.getElementById("loginError");
@@ -61,7 +74,61 @@ let activeJobPolling = false;
 // ... rest of the file (all functions and event listeners)
 // ... init() call stays at the very bottom
 
+settingsBtn?.addEventListener("click", () => showScreen(settingsScreen));
+settingsBackBtn?.addEventListener("click", () => showScreen(dashboardScreen));
+helpBtn?.addEventListener("click", () => {
+  chrome.tabs.create({ url: "https://dealersorbit.com/help" });
+});
+siteBtn?.addEventListener("click", () => {
+  chrome.tabs.create({ url: "https://dealersorbit.com" });
+});
+signOutBtn?.addEventListener("click", async () => {
+  await chrome.storage.local.remove(["token", "user"]);
+  showScreen(loginScreen);
+  userInfo.style.display = "none";
+  logoutBtn.style.display = "none";
+});
 
+// Settings screen populate
+async function showSettingsScreen() {
+  const { user } = await chrome.storage.local.get("user");
+  if (user) {
+    document.getElementById("settingsEmail").textContent = user.email || "";
+    document.getElementById("settingsDealership").textContent = user.dealership_name || "";
+    document.getElementById("voiceIdInput").value = user.elevenlabs_voice_id || "";
+    document.getElementById("avatarIdInput").value = user.heygen_avatar_id || "";
+  }
+  showScreen(settingsScreen);
+}
+
+settingsBtn?.addEventListener("click", showSettingsScreen);
+
+document.getElementById("saveSettingsBtn")?.addEventListener("click", async () => {
+  const { token } = await chrome.storage.local.get("token");
+  const voiceId = document.getElementById("voiceIdInput").value.trim();
+  const avatarId = document.getElementById("avatarIdInput").value.trim();
+
+  const resp = await fetch(`${API_BASE}/auth/me`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      elevenlabs_voice_id: voiceId || null,
+      heygen_avatar_id: avatarId || null,
+    }),
+  });
+
+  if (resp.ok) {
+    const updated = await resp.json();
+    await chrome.storage.local.set({ user: updated });
+    document.getElementById("settingsSaved").style.display = "block";
+    setTimeout(() => {
+      document.getElementById("settingsSaved").style.display = "none";
+    }, 2000);
+  }
+});
 
 // Copy button handlers — work for any btn-copy button
 document.addEventListener("click", async (e) => {
@@ -84,7 +151,7 @@ backBtn.addEventListener("click", async () => {
   // Don't remove pending_review — just go back to queue
   // User can return to review by clicking the extension icon
   chrome.action.setBadgeText({ text: "!" });  // keep badge to remind them
-  showScreen(queueScreen);
+  showScreen(dashboardScreen);
   renderQueue();
   if (queueInterval) clearInterval(queueInterval);
   queueInterval = setInterval(renderQueue, 2000);
@@ -97,10 +164,8 @@ fbBackBtn.addEventListener("click", () => {
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
   const { token, user } = await chrome.storage.local.get(["token", "user"]);
-
   if (token && user) {
     showLoggedIn(user);
-    // Check if there's a vehicle waiting for review
     const hasPendingReview = await checkPendingReview();
     if (!hasPendingReview) {
       renderQueue();
@@ -144,13 +209,14 @@ function showFbListingScreen(listing, vehicle) {
 
 // ── Screen management ─────────────────────────────────────────
 function showScreen(screen) {
-  [loginScreen, emptyScreen, queueScreen, reviewScreen, fbListingScreen]
-    .forEach(s => s.style.display = "none");
-  screen.style.display = "block";
+  [loginScreen, dashboardScreen, reviewScreen, fbListingScreen, settingsScreen]
+    .forEach(s => { if (s) s.style.display = "none"; });
+  if (screen) screen.style.display = "block";
 }
 function showLoggedIn(user) {
-  userInfo.style.display = "flex";
-  userName.textContent = user.full_name?.split(" ")[0] || user.email;
+  userInfo.style.display  = "flex";
+  userName.textContent    = user.full_name?.split(" ")[0] || user.email;
+  logoutBtn.style.display = "none"; // hide old logout — using settings now
 }
 
 
@@ -231,13 +297,33 @@ clearDoneBtn.addEventListener("click", async () => {
   renderQueue();
 });
 
+async function updateDashboardStats(queue) {
+  const today   = new Date().toDateString();
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const completed = queue.filter(j => j.status === "completed");
+
+  if (statAdsToday) statAdsToday.textContent =
+    completed.filter(j => new Date(j.added_at).toDateString() === today).length;
+  if (statAdsWeek)  statAdsWeek.textContent  =
+    completed.filter(j => new Date(j.added_at).getTime() > weekAgo).length;
+  if (statAdsTotal) statAdsTotal.textContent = completed.length;
+
+  const { fb_posting_history = [] } = await chrome.storage.local.get("fb_posting_history");
+  if (statFbPosted) statFbPosted.textContent = fb_posting_history.length;
+}
 
 // ── Queue rendering ───────────────────────────────────────────
 async function renderQueue() {
   if (reviewScreen.style.display !== "none") return;
-  const { queue = [], pending_review } = await chrome.storage.local.get(["queue", "pending_review"]);
+  if (fbListingScreen?.style.display !== "none") return;
 
-  // Show resume banner if there's a pending review
+  const { queue = [], pending_review } = 
+    await chrome.storage.local.get(["queue", "pending_review"]);
+
+  // Always show dashboard — never switch to emptyScreen
+  showScreen(dashboardScreen);
+
+  // Resume banner
   const resumeBanner = document.getElementById("resumeBanner");
   if (pending_review && resumeBanner) {
     const v = pending_review.vehicle;
@@ -254,15 +340,15 @@ async function renderQueue() {
     resumeBanner.style.display = "none";
   }
 
-  // Show sold vehicle notifications
+  // Sold notifications
   const { sold_notifications = [] } = await chrome.storage.local.get("sold_notifications");
   const soldBanner = document.getElementById("soldBanner");
   if (sold_notifications.length > 0 && soldBanner) {
     soldBanner.style.display = "flex";
     soldBanner.innerHTML = `
-    <span>🚨 ${sold_notifications.length} vehicle${sold_notifications.length > 1 ? 's' : ''} may be sold — check your Facebook listings</span>
-    <button class="btn-small" id="dismissSoldBtn">Dismiss</button>
-  `;
+      <span>🚨 ${sold_notifications.length} vehicle${sold_notifications.length > 1 ? 's' : ''} may be sold</span>
+      <button class="btn-small" id="dismissSoldBtn">Dismiss</button>
+    `;
     document.getElementById("dismissSoldBtn")?.addEventListener("click", async () => {
       await chrome.storage.local.remove("sold_notifications");
       chrome.action.setBadgeText({ text: "" });
@@ -272,87 +358,56 @@ async function renderQueue() {
     soldBanner.style.display = "none";
   }
 
+  // Queue empty state
   if (queue.length === 0) {
-    showScreen(emptyScreen);
-    return;
+    if (queueEmpty) queueEmpty.style.display = "block";
+    jobList.innerHTML = "";
+  } else {
+    if (queueEmpty) queueEmpty.style.display = "none";
+    jobList.innerHTML = [...queue].reverse().map(job => renderJobCard(job)).join("");
+
+    // Job card click handlers
+    document.querySelectorAll(".job-card").forEach(card => {
+      card.addEventListener("click", async (e) => {
+        if (e.target.tagName === "A" || e.target.classList.contains("btn-small")) return;
+        const jobId = card.dataset.jobId;
+        const { queue = [] } = await chrome.storage.local.get("queue");
+        const job = queue.find(j => j.id === jobId);
+        if (!job) return;
+
+        const photosForVideo  = job.vehicle.photos_for_video || [];
+        const allPhotos       = job.vehicle.photos || [];
+        const videoPhotoSet   = new Set(photosForVideo);
+        const remainingPhotos = allPhotos.filter(url => !videoPhotoSet.has(url));
+
+        const viewReview = {
+          vehicle:      job.vehicle,
+          photos_all:   allPhotos,
+          view_only:    true,
+          completed_job: job,
+          classified: {
+            exterior:   photosForVideo.slice(0, 6),
+            interior:   photosForVideo.slice(6, 8),
+            additional: photosForVideo.slice(8),
+            other:      [],
+          },
+          review_photos: {
+            exterior:   photosForVideo.slice(0, 6),
+            interior:   photosForVideo.slice(6, 8),
+            additional: photosForVideo.slice(8),
+            other:      remainingPhotos,
+          },
+        };
+
+        await chrome.storage.local.set({ pending_review: viewReview });
+        showReviewScreen(viewReview);
+      });
+    });
   }
 
-  showScreen(queueScreen);
-
-  const waiting = queue.filter(j => j.status === "waiting").length;
-  const generating = queue.filter(j => j.status === "generating").length;
-  const completed = queue.filter(j => j.status === "completed").length;
-  const failed = queue.filter(j => j.status === "failed").length;
-
-  queueCount.textContent = `${queue.length} vehicle${queue.length !== 1 ? "s" : ""} — ` +
-    [
-      generating ? `${generating} generating` : "",
-      waiting ? `${waiting} waiting` : "",
-      completed ? `${completed} done` : "",
-      failed ? `${failed} failed` : "",
-    ].filter(Boolean).join(", ");
-
-  jobList.innerHTML = [...queue].reverse().map(job => renderJobCard(job)).join("");
-
-  // Make job cards clickable — opens vehicle detail/review screen
-  document.querySelectorAll(".job-card").forEach(card => {
-    card.addEventListener("click", async (e) => {
-      // Don't trigger if clicking View Ad link
-      if (e.target.tagName === "A" || e.target.classList.contains("btn-small")) return;
-
-      const jobId = card.dataset.jobId;
-      const { queue = [] } = await chrome.storage.local.get("queue");
-      const job = queue.find(j => j.id === jobId);
-      if (!job) return;
-
-      // Store this job as pending_review so review screen can show it
-      const { pending_review } = await chrome.storage.local.get("pending_review");
-
-      // Build a view-only pending_review from the job's vehicle data
-      const photosForVideo = job.vehicle.photos_for_video || [];
-      const allPhotos = job.vehicle.photos || [];
-
-      // Photos that went into the video
-      const videoPhotoSet = new Set(photosForVideo);
-
-      // All remaining photos go to other
-      const remainingPhotos = allPhotos.filter(url => !videoPhotoSet.has(url));
-
-      const viewReview = {
-        vehicle: job.vehicle,
-        photos_all: allPhotos,
-        view_only: true,
-        completed_job: job,
-        classified: {
-          exterior: photosForVideo.slice(0, 6),
-          interior: photosForVideo.slice(6, 8),
-          additional: photosForVideo.slice(8),
-          other: [],
-        },
-        review_photos: {
-          exterior: photosForVideo.slice(0, 6),
-          interior: photosForVideo.slice(6, 8),
-          additional: photosForVideo.slice(8),
-          other: remainingPhotos,   // all remaining photos shown here
-        },
-      };
-
-      // If we have classified data saved in the job, use it
-      if (job.vehicle.photos_for_video) {
-        viewReview.review_photos = {
-          exterior: job.vehicle.photos_for_video.slice(0, 6),
-          interior: job.vehicle.photos_for_video.slice(6),
-          additional: [],
-          other: [],
-        };
-      }
-
-      await chrome.storage.local.set({ pending_review: viewReview });
-      showReviewScreen(viewReview);
-    });
-  });
+  // Update stats
+  updateDashboardStats(queue);
 }
-
 
 function renderJobCard(job) {
   const v = job.vehicle;
@@ -917,8 +972,8 @@ openFbBtn.addEventListener("click", async () => {
 
   // Get current reviewed photos
   const reviewedPhotosList = [
-    ...(reviewPhotos.exterior   || []),
-    ...(reviewPhotos.interior   || []),
+    ...(reviewPhotos.exterior || []),
+    ...(reviewPhotos.interior || []),
     ...(reviewPhotos.additional || []),
   ];
 
@@ -932,7 +987,7 @@ openFbBtn.addEventListener("click", async () => {
   }
 
   await chrome.runtime.sendMessage({
-    type:    "ADD_TO_FB_QUEUE",
+    type: "ADD_TO_FB_QUEUE",
     listing: { ...currentFbListing.listing, reviewed_photos: reviewedPhotosList },
     vehicle: currentFbListing.vehicle,
   });

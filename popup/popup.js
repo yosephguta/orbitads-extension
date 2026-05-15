@@ -111,6 +111,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
   const { token } = await chrome.storage.local.get("token");
   const voiceId = document.getElementById("voiceIdInput").value.trim();
   const avatarId = document.getElementById("avatarIdInput").value.trim();
+  const phone = document.getElementById("phoneInput")?.value.trim();
 
   const resp = await fetch(`${API_BASE}/auth/me`, {
     method: "PATCH",
@@ -121,6 +122,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
     body: JSON.stringify({
       elevenlabs_voice_id: voiceId || null,
       heygen_avatar_id: avatarId || null,
+      phone_number: phone || null,
     }),
   });
 
@@ -805,13 +807,23 @@ function buildReviewPhotos(classified, photosAll, blockedPhotos = [], explicitOt
   return photos;
 }
 
+let activeJobInterval = null;
+
 async function pollActiveJob() {
-  if (activeJobPolling) return;  // already polling
+  if (activeJobPolling) return;
   activeJobPolling = true;
 
-  const activeJobInterval = setInterval(async () => {
-    if (reviewScreen.style.display === "none") {
+  // Clear any existing interval
+  if (activeJobInterval) {
+    clearInterval(activeJobInterval);
+    activeJobInterval = null;
+  }
+
+  activeJobInterval = setInterval(async () => {
+    // ... rest unchanged
+    if (latestJob.status === "completed" || latestJob.status === "failed") {
       clearInterval(activeJobInterval);
+      activeJobInterval = null;
       activeJobPolling = false;
       return;
     }
@@ -866,13 +878,34 @@ async function pollActiveJob() {
   }, 3000);
 }
 
+
 function showReviewScreen(pendingReview) {
-  // Clear photos immediately to prevent stale photos showing during classification
+  // Kill any running poll interval
+  if (activeJobInterval) {
+    clearInterval(activeJobInterval);
+    activeJobInterval = null;
+  }
+  activeJobPolling = false;
+  // Reset state completely
   reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
-  renderPhotoSections(); // render empty sections right away
+  reviewVehicle = null;
+  activeJobPolling = false;  // reset polling flag
+
+  // Clear Ad ready banner
+  const statusEl = document.getElementById("activeJobStatus");
+  if (statusEl) {
+    statusEl.style.display = "none";
+    statusEl.querySelectorAll("a").forEach(el => el.remove());
+  }
+  const labelEl = document.getElementById("activeJobLabel");
+  if (labelEl) labelEl.textContent = "";
+  const barEl = document.getElementById("activeJobBar");
+  if (barEl) {
+    barEl.style.width = "0%";
+    barEl.classList.remove("done", "failed");
+  }
 
   // ... rest of function unchanged
-  reviewVehicle = null;
 
   // Clean up injected buttons
   document.querySelectorAll(".btn-primary[href], .injected-view-btn").forEach(el => el.remove());
@@ -1288,7 +1321,6 @@ function initDragAndDrop() {
   });
 }
 
-// Generate button
 generateBtn.addEventListener("click", async () => {
   generateBtn.disabled = true;
   generateBtn.textContent = "Adding to queue...";
@@ -1308,32 +1340,33 @@ generateBtn.addEventListener("click", async () => {
     return;
   }
 
-  // Read selected video type
+  if (!reviewVehicle) {
+    alert("No vehicle data found. Please go back and try again.");
+    generateBtn.disabled = false;
+    generateBtn.textContent = "Generate Ad →";
+    generateBtn.style.background = "";
+    return;
+  }
+
   const videoType = document.getElementById("videoTypeSelect")?.value || "walkaround";
 
-  const { pending_review } = await chrome.storage.local.get("pending_review");
-  if (!pending_review) return;
-
   const vehicle = {
-    ...pending_review.vehicle,
-    photos: pending_review.vehicle.photos,
+    ...reviewVehicle,
     photos_for_video: allPhotos,
   };
 
+  // Send to background for video generation
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
-    video_type: videoType,    // ← pass to background
+    video_type: videoType,
   });
 
-  // In generateBtn click handler, after clearing pending_review:
-  await chrome.storage.local.remove("pending_review");
-  // Remove the reviewed vehicle from pending_review_queue by VIN or added_at
-  // Remove the reviewed vehicle from pending_review_queue
-  const currentQueue = await chrome.storage.local.get("pending_review_queue");
-  const existingQueue = currentQueue.pending_review_queue || [];
+  // Remove this vehicle from the pending review queue
+  const { pending_review_queue: rawQueue = [] } =
+    await chrome.storage.local.get("pending_review_queue");
 
-  const updatedQueue = existingQueue.filter(item => {
+  const updatedQueue = rawQueue.filter(item => {
     if (reviewVehicle.vin && item.vehicle.vin) {
       return item.vehicle.vin !== reviewVehicle.vin;
     }
@@ -1343,32 +1376,12 @@ generateBtn.addEventListener("click", async () => {
 
   await chrome.storage.local.set({ pending_review_queue: updatedQueue });
 
-  const remaining = updatedQueue.length;
-  if (remaining > 0) {
-    chrome.action.setBadgeText({ text: String(remaining) });
-  } else {
-    chrome.action.setBadgeText({ text: "" });
-  }
+  // Update badge
+  chrome.action.setBadgeText({
+    text: updatedQueue.length > 0 ? String(updatedQueue.length) : ""
+  });
 
-  // Check for next car in review queue
-  const { pending_review_queue = [] } =
-    await chrome.storage.local.get("pending_review_queue");
-  if (pending_review_queue.length > 0) {
-    const next = pending_review_queue.shift();
-    await chrome.storage.local.set({
-      pending_review: next,
-      pending_review_queue
-    });
-    // Classify the next car's photos
-    chrome.runtime.sendMessage({
-      type: "CLASSIFY_PENDING",
-      vehicle: next.vehicle
-    });
-    showReviewScreen(next);
-    return;
-  }
-
-  // No more in queue — go to dashboard
+  // Go back to dashboard
   renderQueue();
   if (queueInterval) clearInterval(queueInterval);
   queueInterval = setInterval(renderQueue, 2000);

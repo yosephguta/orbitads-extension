@@ -198,6 +198,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "CLASSIFY_PENDING") {
+    classifyInBackground(message.vehicle);
+    sendResponse({ success: true });
+    return true;
+  }
+
   return true;
 });
 
@@ -230,91 +236,134 @@ function applyPhotoHints(photos, photoHints) {
   return combined.slice(0, 20);
 }
 
-// ── Detail page enrichment ────────────────────────────────────
+// ── Global processing lock ─────────────────────────────────
+let isEnriching = false;
+const enrichQueue = [];
+
 async function enrichAndQueue(vehicle) {
+  // Add to processing queue
+  enrichQueue.push(vehicle);
 
-  const domain = vehicle.listing_url
-    ? new URL(vehicle.listing_url).hostname
-    : null;
-
-  if (!vehicle.listing_url) {
-    return addToQueue(vehicle);
+  // If already processing, let the running instance handle it
+  if (isEnriching) {
+    console.log(`OrbitAds: Queued for enrichment: ${vehicle.model}. Queue: ${enrichQueue.length}`);
+    return;
   }
 
-  let tab = null;
-  try {
-    console.log(`OrbitAds: Opening detail page: ${vehicle.listing_url}`);
+  // Process queue sequentially
+  isEnriching = true;
+  while (enrichQueue.length > 0) {
+    const next = enrichQueue.shift();
+    await enrichSingleVehicle(next);
+  }
+  isEnriching = false;
+}
 
-    tab = await chrome.tabs.create({
-      url: vehicle.listing_url,
-      active: false,
-    });
+async function enrichSingleVehicle(vehicle) {
+  console.log("OrbitAds: enrichSingleVehicle:", vehicle.model);
+  console.log("OrbitAds: listing_url:", vehicle.listing_url);
 
-    await waitForTabLoad(tab.id);
-    await sleep(4000);
+  // ── Step 1: Scrape detail page ───────────────────────────
+  if (vehicle.listing_url) {
+    let tab = null;
+    try {
+      console.log(`OrbitAds: Opening detail page: ${vehicle.listing_url}`);
+      tab = await chrome.tabs.create({
+        url: vehicle.listing_url,
+        active: false,
+      });
 
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: extractDetailPageData,
-    });
+      await waitForTabLoad(tab.id);
+      await sleep(4000);
 
-    const detailData = results?.[0]?.result;
-    console.log("OrbitAds: Detail page data:", detailData);
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: extractDetailPageData,
+      });
 
-    if (detailData) {
-      vehicle.vin = detailData.vin || vehicle.vin;
-      vehicle.price = detailData.price || vehicle.price;
-      vehicle.mileage = detailData.mileage || vehicle.mileage;
+      const detailData = results?.[0]?.result;
+      console.log(`OrbitAds: Detail page data for ${vehicle.model}:`, detailData);
 
-      if (detailData.photos && detailData.photos.length > vehicle.photos.length) {
-        vehicle.photos = detailData.photos;
-        console.log(`OrbitAds: Got ${detailData.photos.length} full photos`);
+      if (detailData) {
+        // Verify data matches expected vehicle before using it
+        const titleMatch = !detailData.title ||
+          detailData.title.toLowerCase().includes(vehicle.model?.toLowerCase().split(' ')[0]) ||
+          detailData.title.toLowerCase().includes(vehicle.make?.toLowerCase()) ||
+          detailData.title.toLowerCase().includes(vehicle.year);
+
+        if (!titleMatch) {
+          console.warn(`OrbitAds: Title mismatch! Expected ${vehicle.model}, got ${detailData.title}. Skipping detail data.`);
+        } else {
+          vehicle.vin = detailData.vin || vehicle.vin;
+          vehicle.price = detailData.price || vehicle.price;
+          vehicle.mileage = detailData.mileage || vehicle.mileage;
+
+          if (detailData.photos?.length > (vehicle.photos?.length || 0)) {
+            vehicle.photos = detailData.photos;
+            console.log(`OrbitAds: Got ${detailData.photos.length} full photos`);
+          }
+
+          if (!vehicle.trim && detailData.title) {
+            vehicle.trim = parseTrimFromTitle(
+              detailData.title, vehicle.year, vehicle.make, vehicle.model
+            );
+          }
+        }
       }
 
-      // Apply photo hints to pre-select the right photos for classification
+      // Apply photo hints
+      const domain = new URL(vehicle.listing_url).hostname;
       const domainConfig = getConfigForDomain(domain);
-      const photoHints = domainConfig?.photo_hints;
-      vehicle.photos_for_video = applyPhotoHints(vehicle.photos, photoHints);
-      console.log(`OrbitAds: Selected ${vehicle.photos_for_video.length} photos for classification using hints: ${JSON.stringify(photoHints)}`);
+      vehicle.photos_for_video = applyPhotoHints(
+        vehicle.photos || [], domainConfig?.photo_hints
+      );
+      console.log(`OrbitAds: Selected ${vehicle.photos_for_video.length} photos using hints`);
 
-      if (!vehicle.trim && detailData.title) {
-        vehicle.trim = parseTrimFromTitle(
-          detailData.title, vehicle.year, vehicle.make, vehicle.model
-        );
+    } catch (err) {
+      console.error("OrbitAds: Detail page scrape failed:", err);
+    } finally {
+      if (tab) {
+        try { await chrome.tabs.remove(tab.id); } catch (e) { }
       }
-    }
-
-  } catch (err) {
-    console.error("OrbitAds: Detail page scrape failed:", err);
-  } finally {
-    if (tab) {
-      try { await chrome.tabs.remove(tab.id); } catch (e) { }
     }
   }
 
-  // Store for review instead of queuing directly
+  // ── Step 2: Always add to review queue as a card ──────────
+  const { pending_review_queue = [] } =
+    await chrome.storage.local.get("pending_review_queue");
+
+  const reviewItem = {
+    vehicle: vehicle,
+    photos_all: vehicle.photos || [],
+    photos_for_video: vehicle.photos_for_video || (vehicle.photos || []).slice(0, 20),
+    classified: null,
+    added_at: new Date().toISOString(),
+  };
+
+  // Check for duplicate VIN
+  const isDuplicate = pending_review_queue.some(
+    item => item.vehicle.vin && item.vehicle.vin === vehicle.vin
+  );
+
+  if (isDuplicate) {
+    console.log(`OrbitAds: Skipping duplicate VIN: ${vehicle.vin}`);
+    return;
+  }
+
+  pending_review_queue.push(reviewItem);
   await chrome.storage.local.set({
-    pending_review: {
-      vehicle: vehicle,
-      photos_all: vehicle.photos,              // ALL photos for the UI
-      photos_for_video: vehicle.photos_for_video || vehicle.photos.slice(0, 20),
-      classified: null,
-      added_at: new Date().toISOString(),
-    }
+    pending_review_queue,
+    pending_review: null,  // clear any stuck pending review
   });
 
-  // Open the popup so user sees the review screen
-  chrome.action.openPopup().catch(() => {
-    // openPopup() only works if called from a user gesture in some Chrome versions
-    // If it fails, the badge will alert the user
-    chrome.action.setBadgeText({ text: "!" });
-    chrome.action.setBadgeBackgroundColor({ color: "#1a56db" });
-  });
+  const total = pending_review_queue.length;
+  chrome.action.setBadgeText({ text: String(total) });
+  chrome.action.setBadgeBackgroundColor({ color: "#1a56db" });
+  console.log(`OrbitAds: Added ${vehicle.model} to queue. Total: ${total}`);
 
-  // Classify photos in the background while popup is opening
-  classifyInBackground(vehicle);
-
-  return 1;
+  // Open side panel
+  chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id })
+    .catch(() => { });
 }
 
 async function classifyInBackground(vehicle) {
@@ -364,14 +413,30 @@ async function classifyInBackground(vehicle) {
 
 
     // Store Claude's explicit "other" classifications separately
-    // These should NEVER be auto-filled into additional
     const explicitOther = new Set(classified.other || []);
 
-    const { pending_review } = await chrome.storage.local.get("pending_review");
-    if (pending_review) {
-      pending_review.classified = classified;
-      pending_review.explicit_other = Array.from(explicitOther);
-      await chrome.storage.local.set({ pending_review });
+    // Save to matching queue item first
+    const { pending_review_queue = [] } =
+      await chrome.storage.local.get("pending_review_queue");
+
+    const idx = pending_review_queue.findIndex(item =>
+      (vehicle.vin && item.vehicle?.vin === vehicle.vin) ||
+      item.vehicle?.model === vehicle.model
+    );
+
+    if (idx >= 0) {
+      pending_review_queue[idx].classified = classified;
+      pending_review_queue[idx].explicit_other = Array.from(explicitOther);
+      await chrome.storage.local.set({ pending_review_queue });
+      console.log(`OrbitAds: Classification saved to queue item for ${vehicle.model}`);
+    } else {
+      // Fallback — save to pending_review
+      const { pending_review } = await chrome.storage.local.get("pending_review");
+      if (pending_review) {
+        pending_review.classified = classified;
+        pending_review.explicit_other = Array.from(explicitOther);
+        await chrome.storage.local.set({ pending_review });
+      }
     }
 
   } catch (err) {
@@ -531,15 +596,15 @@ async function addToQueue(vehicle, videoType = "walkaround") {
   }
 
   const job = {
-    id:         Date.now().toString(),
-    vehicle:    vehicle,
-    theme:      defaultTheme,
+    id: Date.now().toString(),
+    vehicle: vehicle,
+    theme: defaultTheme,
     video_type: videoType,        // ← store video type
-    status:     "waiting",
-    added_at:   new Date().toISOString(),
-    progress:   0,
-    label:      "Waiting...",
-    error:      null,
+    status: "waiting",
+    added_at: new Date().toISOString(),
+    progress: 0,
+    label: "Waiting...",
+    error: null,
     result_url: null,
   };
 
@@ -580,9 +645,38 @@ async function processQueue() {
   processQueue();
 }
 
+async function saveToListingHistory(job, apiJob, token) {
+  try {
+    const v = job.vehicle;
+    await fetch(`${API_BASE}/listings/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        job_id: job.api_job_id,
+        vin: v.vin,
+        year: v.year,
+        make: v.make,
+        model: v.model,
+        trim: v.trim,
+        price: v.price,
+        mileage: v.mileage,
+        listing_url: v.listing_url,
+        video_url: apiJob.final_video_url,
+        photo_urls: JSON.stringify(v.photos_for_video || []),
+      }),
+    });
+    console.log("OrbitAds: Saved listing to history");
+  } catch (err) {
+    console.error("OrbitAds: Failed to save listing history:", err);
+  }
+}
 
 async function realProcessing(job, queue) {
   const { token } = await chrome.storage.local.get("token");
+  console.log("OrbitAds: realProcessing started, token:", !!token);
 
   if (!token) {
     throw new Error("Not logged in — please sign in via the extension popup.");
@@ -628,7 +722,7 @@ async function realProcessing(job, queue) {
   const MAX_WAIT = 600000; // 10 minutes
   let elapsed = 0;
 
-    while (elapsed < MAX_WAIT) {
+  while (elapsed < MAX_WAIT) {
     await sleep(POLL_INTERVAL);
     elapsed += POLL_INTERVAL;
 
@@ -641,33 +735,39 @@ async function realProcessing(job, queue) {
     const pollData = await pollResp.json();
 
     const statusMap = {
-      "pending":           { progress: 5,   label: "Starting pipeline..." },
-      "vin_decoding":      { progress: 15,  label: "Decoding VIN..." },
-      "script_generating": { progress: 35,  label: "Writing ad script..." },
-      "voice_cloning":     { progress: 55,  label: "Cloning voice..." },
-      "avatar_generating": { progress: 75,  label: "Generating avatar..." },
-      "assembling":        { progress: 88,  label: "Assembling video..." },
-      "completed":         { progress: 100, label: "Complete!" },
-      "failed":            { progress: 0,   label: pollData.error_message || "Failed" },
+      "pending": { progress: 5, label: "Starting pipeline..." },
+      "vin_decoding": { progress: 15, label: "Decoding VIN..." },
+      "script_generating": { progress: 35, label: "Writing ad script..." },
+      "voice_cloning": { progress: 55, label: "Cloning voice..." },
+      "avatar_generating": { progress: 75, label: "Generating avatar..." },
+      "assembling": { progress: 88, label: "Assembling video..." },
+      "completed": { progress: 100, label: "Complete!" },
+      "failed": { progress: 0, label: pollData.error_message || "Failed" },
     };
 
     const mapped = statusMap[pollData.status] || { progress: job.progress, label: job.label };
     job.progress = mapped.progress;
-    job.label    = mapped.label;
+    job.label = mapped.label;
     await saveQueue(queue);
 
     if (pollData.status === "completed") {
       job.result_url = pollData.final_video_url;
-      job.status     = "completed";
-      job.progress   = 100;
-      job.label      = "Complete!";
-      await saveQueue(queue);  // save again with result_url
+      job.status = "completed";
+      job.progress = 100;
+      job.label = "Complete!";
+      await saveQueue(queue);
+
+      console.log("OrbitAds: Job completed, attempting to save to history...");
+      console.log("OrbitAds: token available:", !!token);
+      console.log("OrbitAds: final_video_url:", pollData.final_video_url);
+
+      await saveToListingHistory(job, pollData, token);
       return;
     }
 
     if (pollData.status === "failed") {
       job.status = "failed";
-      job.error  = pollData.error_message || "Pipeline failed.";
+      job.error = pollData.error_message || "Pipeline failed.";
       await saveQueue(queue);
       throw new Error(pollData.error_message || "Pipeline failed.");
     }
@@ -701,8 +801,8 @@ async function addToFbQueue(listing, vehicle) {
     await chrome.storage.local.get(["fb_post_queue", "fb_posting_history"]);
 
   // Check daily limit
-  const today       = new Date().toDateString();
-  const todayPosts  = fb_posting_history.filter(
+  const today = new Date().toDateString();
+  const todayPosts = fb_posting_history.filter(
     p => new Date(p.timestamp).toDateString() === today
   ).length;
 
@@ -712,11 +812,11 @@ async function addToFbQueue(listing, vehicle) {
   }
 
   const item = {
-    id:         Date.now().toString(),
-    listing:    listing,
-    vehicle:    vehicle,
-    status:     "waiting",
-    added_at:   new Date().toISOString(),
+    id: Date.now().toString(),
+    listing: listing,
+    vehicle: vehicle,
+    status: "waiting",
+    added_at: new Date().toISOString(),
     post_after: calculateNextPostTime(fb_post_queue, fb_posting_history),
   };
 
@@ -733,7 +833,7 @@ function calculateNextPostTime(queue, history) {
   const now = Date.now();
 
   // Find last post time from either queue or history
-  const lastFromQueue   = queue.filter(j => j.status === "posted")
+  const lastFromQueue = queue.filter(j => j.status === "posted")
     .map(j => new Date(j.posted_at).getTime())
     .sort((a, b) => b - a)[0];
 
@@ -749,7 +849,7 @@ function calculateNextPostTime(queue, history) {
   }
 
   // Calculate random gap between 7-12 minutes from last post
-  const gap      = FB_MIN_GAP_MS + Math.random() * (FB_MAX_GAP_MS - FB_MIN_GAP_MS);
+  const gap = FB_MIN_GAP_MS + Math.random() * (FB_MAX_GAP_MS - FB_MIN_GAP_MS);
   const postTime = lastPost + gap;
 
   return Math.max(postTime, now + 3000);
@@ -773,7 +873,7 @@ async function processFbQueue() {
 
     if (nextReady) {
       const delay = nextReady - now + 1000;
-      console.log(`OrbitAds FB: Next post in ${Math.round(delay/60000)} minutes`);
+      console.log(`OrbitAds FB: Next post in ${Math.round(delay / 60000)} minutes`);
       setTimeout(processFbQueue, delay);
     }
     return;
@@ -785,14 +885,14 @@ async function processFbQueue() {
 
   // Store the listing data for the content script
   await chrome.storage.local.set({
-  fb_listing: {
-    ...nextItem.listing,
-    vehicle:         nextItem.vehicle,
-    reviewed_photos: nextItem.listing.reviewed_photos || [],
-    queue_item_id:   nextItem.id,
-    created_at:      new Date().toISOString(),
-  }
-});
+    fb_listing: {
+      ...nextItem.listing,
+      vehicle: nextItem.vehicle,
+      reviewed_photos: nextItem.listing.reviewed_photos || [],
+      queue_item_id: nextItem.id,
+      created_at: new Date().toISOString(),
+    }
+  });
 
   // Open Facebook Marketplace create vehicle page
   chrome.tabs.create({
@@ -808,14 +908,14 @@ async function confirmFbPosted(queueItemId) {
 
   const item = fb_post_queue.find(j => j.id === queueItemId);
   if (item) {
-    item.status    = "posted";
+    item.status = "posted";
     item.posted_at = new Date().toISOString();
   }
 
   // Add to history for rate limiting
   fb_posting_history.push({
     timestamp: new Date().toISOString(),
-    vin:       item?.vehicle?.vin,
+    vin: item?.vehicle?.vin,
   });
 
   // Keep only last 30 days of history
@@ -825,7 +925,7 @@ async function confirmFbPosted(queueItemId) {
   );
 
   await chrome.storage.local.set({
-    fb_post_queue:      fb_post_queue,
+    fb_post_queue: fb_post_queue,
     fb_posting_history: cleanHistory,
   });
 
@@ -842,8 +942,8 @@ async function runDailySoldCheck() {
   if (!token) return;
 
   // Only run once per day
-  const now       = Date.now();
-  const oneDayMs  = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const oneDayMs = 24 * 60 * 60 * 1000;
   if (last_sold_check && now - last_sold_check < oneDayMs) return;
 
   try {
@@ -862,9 +962,9 @@ async function runDailySoldCheck() {
 
     // Check sold status
     const checkResp = await fetch(`${API_BASE}/listings/check-sold`, {
-      method:  "POST",
+      method: "POST",
       headers: {
-        "Content-Type":  "application/json",
+        "Content-Type": "application/json",
         "Authorization": `Bearer ${token}`,
       },
       body: JSON.stringify({ listing_ids: activeIds }),

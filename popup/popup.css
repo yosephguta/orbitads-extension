@@ -599,11 +599,22 @@ body {
 }
 
 .review-status {
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a56db;
   margin-bottom: 10px;
   text-align: center;
-  font-style: italic;
+  padding: 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%   { opacity: 1; }
+  50%  { opacity: 0.5; }
+  100% { opacity: 1; }
 }
 
 .review-section {
@@ -1001,4 +1012,33 @@ body {
 .fb-queue-card-time {
   font-size: 11px;
   color: #6b7280;
+}
+
+.job-card:hover {
+  background: #f9fafb;
+}
+
+.review-queue-card:hover {
+  background: #eff6ff !important;
+}
+
+.fb-countdown-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #1e40af;
+  font-weight: 600;
+}
+
+.fb-countdown-time {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a56db;
+  font-variant-numeric: tabular-nums;
 }

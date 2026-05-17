@@ -439,57 +439,6 @@ async function renderQueue() {
   // Always show dashboard — never switch to emptyScreen
   showScreen(dashboardScreen);
 
-  // Resume banner — show pending review or next in review queue
-  // const resumeBanner = document.getElementById("resumeBanner");
-
-  // if (pending_review && resumeBanner) {
-  //   const v = pending_review.vehicle;
-  //   const title = [v.year, v.make?.toUpperCase(), v.model].filter(Boolean).join(" ");
-  //   const queueCount = pending_review_queue.length;
-  //   resumeBanner.style.display = "block";
-  //   resumeBanner.innerHTML = `
-  //   <div>
-  //     <div style="font-weight:600">📋 Review pending: ${title}</div>
-  //     ${queueCount > 0 ? `<div style="font-size:11px;margin-top:2px">+${queueCount} more waiting</div>` : ""}
-  //   </div>
-  //   <button class="btn-small" id="resumeBtn">Review →</button>
-  // `;
-  //   document.getElementById("resumeBtn")?.addEventListener("click", () => {
-  //     showReviewScreen(pending_review);
-  //   });
-  // } else if (pending_review_queue.length > 0 && resumeBanner) {
-  //   // No current pending review but there are cars waiting
-  //   const next = pending_review_queue[0];
-  //   const v = next.vehicle;
-  //   const title = [v.year, v.make?.toUpperCase(), v.model].filter(Boolean).join(" ");
-  //   resumeBanner.style.display = "block";
-  //   resumeBanner.innerHTML = `
-  //   <div>
-  //     <div style="font-weight:600">📋 ${pending_review_queue.length} car${pending_review_queue.length > 1 ? 's' : ''} waiting for review</div>
-  //     <div style="font-size:11px;margin-top:2px">Next: ${title}</div>
-  //   </div>
-  //   <button class="btn-small" id="resumeBtn">Start →</button>
-  // `;
-  //   document.getElementById("resumeBtn")?.addEventListener("click", async () => {
-  //     // Move first from queue to pending_review
-  //     const { pending_review_queue = [] } =
-  //       await chrome.storage.local.get("pending_review_queue");
-  //     const next = pending_review_queue.shift();
-  //     await chrome.storage.local.set({
-  //       pending_review: next,
-  //       pending_review_queue
-  //     });
-  //     // Classify photos
-  //     chrome.runtime.sendMessage({
-  //       type: "CLASSIFY_PENDING",
-  //       vehicle: next.vehicle
-  //     });
-  //     showReviewScreen(next);
-  //   });
-  // } else if (resumeBanner) {
-  //   resumeBanner.style.display = "none";
-  // }
-
   const { stale_review_notice } = await chrome.storage.local.get("stale_review_notice");
   const staleBanner = document.getElementById("staleBanner");
   if (stale_review_notice && staleBanner) {
@@ -569,6 +518,8 @@ async function renderQueue() {
     });
   });
 
+
+
   // Delete from queue
   reviewQueueContainer.querySelectorAll(".delete-review-btn").forEach(btn => {
     btn.addEventListener("click", async (e) => {
@@ -607,6 +558,67 @@ async function renderQueue() {
   } else {
     if (queueEmpty) queueEmpty.style.display = "none";
     jobList.innerHTML = [...queue].reverse().map(job => renderJobCard(job)).join("");
+
+    // Post to Facebook from queue card
+    document.querySelectorAll(".post-fb-from-queue").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const jobId = btn.dataset.jobId;
+        const { queue = [], token } =
+          await chrome.storage.local.get(["queue", "token"]);
+        const job = queue.find(j => j.id === jobId);
+        console.log("Found job:", job?.vehicle?.model, "result_url:", job?.result_url);
+        if (!job) return;
+
+        btn.textContent = "Generating listing...";
+        btn.disabled = true;
+
+        try {
+          const v = job.vehicle;
+          const resp = await fetch(`${API_BASE}/listings/generate`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              year: v.year,
+              make: v.make,
+              model: v.model,
+              trim: v.trim,
+              price: v.price,
+              mileage: v.mileage,
+              vin: v.vin,
+              listing_url: v.listing_url,
+            }),
+          });
+
+          if (!resp.ok) throw new Error("Failed to generate listing");
+          const listing = await resp.json();
+
+          // Store fb_listing WITH video URL from this completed job
+          await chrome.storage.local.set({
+            fb_listing: {
+              ...listing,
+              vehicle: v,
+              reviewed_photos: v.photos_for_video || [],
+              video_url: job.result_url || null,  // ← video URL from completed job
+              created_at: new Date().toISOString(),
+            }
+          });
+
+          console.log("OrbitAds: FB listing ready, video_url:", job.result_url);
+
+          // Show listing preview screen
+          showFbListingScreen(listing, v);
+
+        } catch (err) {
+          console.error("FB listing error:", err);
+          btn.textContent = "📘 Post to FB";
+          btn.disabled = false;
+        }
+      });
+    });
 
     // Job card click handlers
     document.querySelectorAll(".job-card").forEach(card => {
@@ -653,6 +665,11 @@ async function renderQueue() {
   if (recentAdsLoadCount === 1 || recentAdsLoadCount % 10 === 0) {
     loadRecentAds();
   }
+
+  if (pending_review_queue.length === 0) {
+    reviewQueueContainer.style.display = "none";
+  }
+
 }
 
 function getFriendlyError(error) {
@@ -689,17 +706,22 @@ function renderJobCard(job) {
     job.status === "failed" ? "failed" : "";
 
   const actionsHtml = job.status === "completed"
-    ? `<div class="job-actions">
-         ${job.result_url
+    ? `<div class="job-actions" style="display:flex;gap:6px;margin-top:6px">
+       ${job.result_url
       ? `<a href="${job.result_url}" target="_blank" class="btn-small">▶ View Ad</a>`
-      : `<span class="job-label" style="color:#6b7280">Fetching video link...</span>`
+      : `<span class="job-label" style="color:#6b7280">Fetching video...</span>`
     }
-       </div>`
+       <button class="btn-small post-fb-from-queue" 
+               data-job-id="${job.id}"
+               style="background:#1877f2">
+         📘 Post to FB
+       </button>
+     </div>`
     : job.status === "failed" && job.error
       ? `<div class="job-label" style="color:#dc2626;margin-top:4px">
-      ${getFriendlyError(job.error)}
+       ${getFriendlyError(job.error)}
      </div>
-     <button class="btn-small retry-btn" data-job-id="${job.id}" 
+     <button class="btn-small retry-btn" data-job-id="${job.id}"
              style="margin-top:6px;background:#6b7280">
        Remove
      </button>`
@@ -820,43 +842,42 @@ async function pollActiveJob() {
   }
 
   activeJobInterval = setInterval(async () => {
-    // ... rest unchanged
-    if (latestJob.status === "completed" || latestJob.status === "failed") {
-      clearInterval(activeJobInterval);
-      activeJobInterval = null;
-      activeJobPolling = false;
-      return;
-    }
+    // Declare FIRST before any usage
+    const { queue = [], current_generating_vin } =
+      await chrome.storage.local.get(["queue", "current_generating_vin"]);
 
-    const { queue = [] } = await chrome.storage.local.get("queue");
+    const currentLatestJob = current_generating_vin
+      ? queue.find(j => j.vehicle?.vin === current_generating_vin) || queue[queue.length - 1]
+      : queue[queue.length - 1];
 
-    // Find the most recently added job (last in array)
-    const latestJob = queue[queue.length - 1];
+    // Now safe to use
+    if (!currentLatestJob) return;
 
     const statusEl = document.getElementById("activeJobStatus");
     const labelEl = document.getElementById("activeJobLabel");
     const barEl = document.getElementById("activeJobBar");
 
-    if (!latestJob || !statusEl) return;
+    if (!statusEl) return;
 
     statusEl.style.display = "block";
-    labelEl.textContent = latestJob.label || "Processing...";
-    barEl.style.width = (latestJob.progress || 0) + "%";
+    labelEl.textContent = currentLatestJob.label || "Processing...";
+    barEl.style.width = (currentLatestJob.progress || 0) + "%";
 
-    if (latestJob.status === "completed") {
+    if (currentLatestJob.status === "completed") {
       clearInterval(activeJobInterval);
+      activeJobInterval = null;
       activeJobPolling = false;
-      const completedRecently = latestJob.added_at &&
-        (Date.now() - new Date(latestJob.added_at).getTime()) < 3600000;
 
-      // Remove any previously added buttons in the status element
+      const completedRecently = currentLatestJob.added_at &&
+        (Date.now() - new Date(currentLatestJob.added_at).getTime()) < 3600000;
+
       statusEl.querySelectorAll("a").forEach(el => el.remove());
 
-      if (latestJob.result_url && completedRecently) {
+      if (currentLatestJob.result_url && completedRecently) {
         labelEl.textContent = "✓ Ad ready!";
         barEl.classList.add("done");
         const viewBtn = document.createElement("a");
-        viewBtn.href = latestJob.result_url;
+        viewBtn.href = currentLatestJob.result_url;
         viewBtn.target = "_blank";
         viewBtn.className = "btn-small injected-view-btn";
         viewBtn.textContent = "▶ View Ad";
@@ -866,15 +887,26 @@ async function pollActiveJob() {
       } else {
         statusEl.style.display = "none";
       }
+      return;
     }
 
-    if (latestJob.status === "failed") {
+    if (currentLatestJob.status === "failed") {
       clearInterval(activeJobInterval);
+      activeJobInterval = null;
       activeJobPolling = false;
-      labelEl.textContent = `Failed: ${latestJob.error || "Unknown error"}`;
+      labelEl.textContent = `Failed: ${currentLatestJob.error || "Unknown error"}`;
       labelEl.style.color = "#dc2626";
       barEl.classList.add("failed");
+      return;
     }
+
+    // Still running — check if we left the review screen
+    if (reviewScreen.style.display === "none") {
+      clearInterval(activeJobInterval);
+      activeJobInterval = null;
+      activeJobPolling = false;
+    }
+
   }, 3000);
 }
 
@@ -1355,12 +1387,18 @@ generateBtn.addEventListener("click", async () => {
     photos_for_video: allPhotos,
   };
 
+  const theme = document.getElementById("themeSelect")?.value ||
+    videoTypeSelectDash?.value || "family";
+
   // Send to background for video generation
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
     video_type: videoType,
+    theme: theme,
   });
+
+  await chrome.storage.local.set({ current_generating_vin: reviewVehicle?.vin });
 
   // Remove this vehicle from the pending review queue
   const { pending_review_queue: rawQueue = [] } =
@@ -1439,11 +1477,28 @@ facebookBtn.addEventListener("click", async () => {
     if (!resp.ok) throw new Error("Failed to generate listing");
     const listing = await resp.json();
 
+    // Get video URL — check generation queue for this vehicle
+    const { queue = [] } = await chrome.storage.local.get("queue");
+
+    const completedJob = queue.find(j => {
+      if (j.status !== "completed") return false;
+      // Match by VIN first (most reliable)
+      if (v.vin && j.vehicle?.vin && v.vin === j.vehicle.vin) return true;
+      // Fallback: model + year + price (more specific than just model)
+      return j.vehicle?.model === v.model &&
+        j.vehicle?.year === v.year &&
+        j.vehicle?.price === v.price;
+    });
+
+    const videoUrl = completedJob?.result_url || null;
+    console.log("OrbitAds: Found completed job:", !!completedJob, "video_url:", videoUrl);
+
     await chrome.storage.local.set({
       fb_listing: {
         ...listing,
         vehicle: v,
         reviewed_photos: reviewedPhotosList,
+        video_url: videoUrl,
         created_at: new Date().toISOString(),
       }
     });
@@ -1534,10 +1589,6 @@ uploadInput.addEventListener("change", (e) => {
   renderPhotoSections();
 });
 
-// Hide if empty
-if (pending_review_queue.length === 0) {
-  reviewQueueContainer.style.display = "none";
-}
 
 // ── Start ──────────────────────────────────────────────────────
 init();

@@ -192,7 +192,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "QUEUE_REVIEWED") {
-    addToQueue(message.vehicle, message.video_type || "walkaround")
+    addToQueue(message.vehicle, message.video_type || "walkaround", message.theme || "family")
       .then(result => sendResponse({ success: true, queueLength: result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -201,6 +201,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "CLASSIFY_PENDING") {
     classifyInBackground(message.vehicle);
     sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === "ADD_TO_FB_QUEUE") {
+    addToFbQueue(message.listing, message.vehicle)
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === "FB_POSTED_CONFIRM") {
+    confirmFbPosted(message.listing_id)
+      .then(() => sendResponse({ success: true }));
     return true;
   }
 
@@ -241,22 +254,24 @@ let isEnriching = false;
 const enrichQueue = [];
 
 async function enrichAndQueue(vehicle) {
-  // Add to processing queue
   enrichQueue.push(vehicle);
 
-  // If already processing, let the running instance handle it
   if (isEnriching) {
-    console.log(`OrbitAds: Queued for enrichment: ${vehicle.model}. Queue: ${enrichQueue.length}`);
+    console.log(`OrbitAds: Queued for enrichment: ${vehicle.model}`);
     return;
   }
 
-  // Process queue sequentially
   isEnriching = true;
-  while (enrichQueue.length > 0) {
-    const next = enrichQueue.shift();
-    await enrichSingleVehicle(next);
+  try {
+    while (enrichQueue.length > 0) {
+      const next = enrichQueue.shift();
+      await enrichSingleVehicle(next);
+    }
+  } catch (err) {
+    console.error("OrbitAds: Enrich queue error:", err);
+  } finally {
+    isEnriching = false;  // ← always reset even on error
   }
-  isEnriching = false;
 }
 
 async function enrichSingleVehicle(vehicle) {
@@ -578,7 +593,7 @@ function parseTrimFromTitle(title, year, make, model) {
 
 
 // ── Queue management ──────────────────────────────────────────
-async function addToQueue(vehicle, videoType = "walkaround") {
+async function addToQueue(vehicle, videoType = "walkaround", theme = "family") {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
 
@@ -598,9 +613,9 @@ async function addToQueue(vehicle, videoType = "walkaround") {
   const job = {
     id: Date.now().toString(),
     vehicle: vehicle,
-    theme: defaultTheme,
     video_type: videoType,        // ← store video type
     status: "waiting",
+    theme: theme,        // ← now correctly passed
     added_at: new Date().toISOString(),
     progress: 0,
     label: "Waiting...",
@@ -779,22 +794,6 @@ const FB_MIN_GAP_MS = 7 * 60 * 1000;   // 7 minutes minimum
 const FB_MAX_GAP_MS = 12 * 60 * 1000;  // 12 minutes maximum
 const FB_MAX_PER_DAY = 10;
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // ... existing handlers ...
-
-  if (message.type === "ADD_TO_FB_QUEUE") {
-    addToFbQueue(message.listing, message.vehicle)
-      .then(() => sendResponse({ success: true }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-
-  if (message.type === "FB_POSTED_CONFIRM") {
-    confirmFbPosted(message.listing_id)
-      .then(() => sendResponse({ success: true }));
-    return true;
-  }
-});
 
 async function addToFbQueue(listing, vehicle) {
   const { fb_post_queue = [], fb_posting_history = [] } =

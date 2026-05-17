@@ -540,40 +540,44 @@ function createImportButton(vehicleData) {
   btn.textContent = "⊕ Import to OrbitAds";
   btn.title = "Add this vehicle to OrbitAds ad generation queue";
 
-  btn.addEventListener("click", async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
 
-    // Show loading state
-    btn.textContent = "Adding to queue...";
     btn.disabled = true;
+    btn.textContent = "Adding to queue...";
     btn.style.background = "#6b7280";
 
+    // Set a timeout to re-enable button if message fails
+    const timeout = setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = "⊕ Import to OrbitAds";
+      btn.style.background = "";
+      console.log("OrbitAds: Import timed out — re-enabling button");
+    }, 15000); // 15 second timeout
+
     try {
-      // Send to background script
       const response = await chrome.runtime.sendMessage({
         type: "ADD_TO_QUEUE",
         vehicle: vehicleData,
       });
+      clearTimeout(timeout);
 
-      if (response && response.success) {
-        btn.textContent = "✓ Added to queue!";
+      if (response?.success) {
+        btn.textContent = "✓ In Queue";
         btn.style.background = "#16a34a";
-        setTimeout(() => {
-          btn.textContent = "✓ In Queue";
-          btn.style.background = "#15803d";
-        }, 2000);
       } else {
-        throw new Error(response?.error || "Unknown error");
+        btn.disabled = false;
+        btn.textContent = "⊕ Import to OrbitAds";
+        btn.style.background = "";
       }
     } catch (err) {
-      btn.textContent = "✕ Error — retry";
-      btn.style.background = "#dc2626";
+      clearTimeout(timeout);
+      console.error("OrbitAds: Failed to send message:", err);
       btn.disabled = false;
-      console.error("OrbitAds import error:", err);
+      btn.textContent = "⊕ Import to OrbitAds";
+      btn.style.background = "";
     }
   });
-
   return btn;
 }
 
@@ -671,6 +675,10 @@ async function tryFacebookAutoFill() {
   await uploadPhotosToFacebook(fb_listing);
   await sleep(2000);
 
+  // ── Step 1b: Upload video ─────────────────────────────────
+  await uploadVideoToFacebook(fb_listing);
+  await sleep(2000);
+
   // ── Step 2: Year ──────────────────────────────────────────
   if (v.year) {
     await fillDropdown("Year", v.year);
@@ -753,7 +761,7 @@ async function tryFacebookAutoFill() {
       console.log("OrbitAds: ✗ Model input not found");
     }
   }
-  
+
   // ── Step 6: Mileage ───────────────────────────────────────
   await sleep(500);
   if (v.mileage) {
@@ -951,6 +959,47 @@ async function uploadPhotosToFacebook(fbListing) {
   }
 }
 
+async function uploadVideoToFacebook(fbListing) {
+  if (!fbListing.video_url) {
+    console.log("OrbitAds: No video URL — skipping video upload");
+    return;
+  }
+
+  const videoInput = document.querySelector(
+    'input[type="file"][accept*="video"]'
+  );
+
+  if (!videoInput) {
+    console.log("OrbitAds: Video file input not found");
+    return;
+  }
+
+  console.log("OrbitAds: Downloading video for Facebook upload...");
+
+  try {
+    const resp = await fetch(fbListing.video_url);
+    if (!resp.ok) {
+      console.log("OrbitAds: Video download failed:", resp.status);
+      return;
+    }
+
+    const blob = await resp.blob();
+    const file = new File([blob], "vehicle-ad.mp4", { type: "video/mp4" });
+
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    videoInput.files = dt.files;
+
+    videoInput.dispatchEvent(new Event("change", { bubbles: true }));
+    videoInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    console.log("OrbitAds: ✓ Video uploaded to Facebook");
+    await sleep(4000); // Facebook needs time to process video
+
+  } catch (err) {
+    console.error("OrbitAds: Video upload failed:", err);
+  }
+}
 
 function guessBodyStyle(model) {
   const m = model.toLowerCase();

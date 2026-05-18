@@ -353,7 +353,7 @@ async function loadRecentAds() {
 
   recentAds.innerHTML = completed.reverse().map(job => {
     const v = job.vehicle;
-    const title = [v.year, v.make?.toUpperCase(), v.model, v.trim]
+    const title = [l.year, l.make?.toUpperCase(), l.model, l.trim]
       .filter(Boolean).join(" ");
     return `
       <div class="recent-ad-card">

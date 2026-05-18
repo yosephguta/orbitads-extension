@@ -1175,14 +1175,23 @@ function showFbAutoFillBanner() {
   // "I've Posted" button — confirms posting and processes next queue item
   document.getElementById("orbitads-confirm-post")?.addEventListener("click", async () => {
     const { fb_listing } = await chrome.storage.local.get("fb_listing");
+
     if (fb_listing?.queue_item_id) {
+      // Confirm posting in background queue
       chrome.runtime.sendMessage({
         type: "FB_POSTED_CONFIRM",
         listing_id: fb_listing.queue_item_id,
       });
     }
+
+    // Mark listing as posted in backend + save listing_url
+    chrome.runtime.sendMessage({
+      type: "MARK_LISTING_POSTED",
+      vehicle: fb_listing?.vehicle,
+      listing_url: fb_listing?.vehicle?.listing_url,
+    });
+
     banner.remove();
-    // Show success message
     const success = document.createElement("div");
     success.style.cssText = banner.style.cssText;
     success.style.background = "#16a34a";

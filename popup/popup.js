@@ -70,11 +70,14 @@ const modalStep2 = document.getElementById("modalStep2");
 const modalStep3 = document.getElementById("modalStep3");
 const modalStep4 = document.getElementById("modalStep4");
 const modalVehicleTitle = document.getElementById("modalVehicleTitle");
+const soldModal = document.getElementById("soldModal");
+const soldCheckerStat = document.getElementById("soldCheckerStat");
+const statSoldCount = document.getElementById("statSoldCount");
 
 // ── State ──────────────────────────────────────────────────────
 let currentFbListing = null;
 let queueInterval = null;
-let reviewPhotos = { exterior: [], interior: [], other: [] };
+let reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
 let reviewVehicle = null;
 let activeJobPolling = false;
 let modalSelectedType = null;
@@ -84,12 +87,163 @@ let modalVehicle = null;
 // ... rest of the file (all functions and event listeners)
 // ... init() call stays at the very bottom
 
+// Sold checker stat click
+soldCheckerStat?.addEventListener("click", async () => {
+  const modal = document.getElementById("soldModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  
+  // Attach close handler here so modal exists
+  document.getElementById("closeSoldModal").onclick = () => {
+    modal.style.display = "none";
+  };
+  
+  await loadSoldModalContent();
+});
+
+
+async function loadSoldModalContent() {
+  const content = document.getElementById("soldModalContent");
+  content.innerHTML = `<p style="color:#6b7280;font-size:13px;text-align:center">
+    🔍 Checking listings...</p>`;
+
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) {
+    content.innerHTML = `<p style="color:#dc2626">Please sign in first.</p>`;
+    return;
+  }
+
+  try {
+    // Get listings from backend
+    const resp = await fetch(`${API_BASE}/listings/`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error("Failed");
+
+    const listings = await resp.json();
+    const posted = listings.filter(l => l.fb_posted);
+    const sold = listings.filter(l => l.is_sold);
+    const active = posted.filter(l => !l.is_sold);
+
+    if (posted.length === 0) {
+      content.innerHTML = `
+        <p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">
+          No Facebook listings found yet.<br>
+          Post a vehicle to Facebook first.
+        </p>`;
+      return;
+    }
+
+    // Trigger a fresh check
+    const activeIds = active.map(l => l.id);
+    if (activeIds.length > 0) {
+      const checkResp = await fetch(`${API_BASE}/listings/check-sold`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({ listing_ids: activeIds }),
+      });
+
+      if (checkResp.ok) {
+        const { sold_ids } = await checkResp.json();
+        if (sold_ids.length > 0) {
+          // Refresh listings after check
+          const refreshResp = await fetch(`${API_BASE}/listings/`, {
+            headers: { "Authorization": `Bearer ${token}` },
+          });
+          if (refreshResp.ok) {
+            const refreshed = await refreshResp.json();
+            content.innerHTML = renderSoldModalContent(refreshed);
+            updateSoldStat(refreshed);
+            return;
+          }
+        }
+      }
+    }
+
+    content.innerHTML = renderSoldModalContent(listings);
+    updateSoldStat(listings);
+
+  } catch (err) {
+    content.innerHTML = `<p style="color:#dc2626;font-size:13px">
+      Failed to check listings. Please try again.</p>`;
+  }
+}
+
+function renderSoldModalContent(listings) {
+  const sold = listings.filter(l => l.is_sold);
+  const active = listings.filter(l => l.fb_posted && !l.is_sold);
+
+  let html = "";
+
+  if (sold.length > 0) {
+    html += `<div style="margin-bottom:16px">
+      <div style="font-size:12px;font-weight:700;color:#dc2626;
+                  text-transform:uppercase;margin-bottom:8px">
+        🚨 May Be Sold (${sold.length})
+      </div>`;
+    sold.forEach(l => {
+      const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ");
+      html += `<div class="recent-ad-card" style="border-left:3px solid #dc2626">
+        <div class="recent-ad-info">
+          <div class="recent-ad-title">${title}</div>
+          <div class="recent-ad-meta">${l.price || ""} · Remove from Facebook</div>
+        </div>
+        <span class="recent-ad-sold">Sold</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (active.length > 0) {
+    html += `<div>
+      <div style="font-size:12px;font-weight:700;color:#16a34a;
+                  text-transform:uppercase;margin-bottom:8px">
+        ✓ Still Active (${active.length})
+      </div>`;
+    active.forEach(l => {
+      const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ");
+      html += `<div class="recent-ad-card" style="border-left:3px solid #16a34a">
+        <div class="recent-ad-info">
+          <div class="recent-ad-title">${title}</div>
+          <div class="recent-ad-meta">${l.price || ""}</div>
+        </div>
+        <span style="color:#16a34a;font-size:11px;font-weight:600">Active</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (sold.length === 0 && active.length === 0) {
+    html = `<p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">
+      No posted listings found.</p>`;
+  }
+
+  return html;
+}
+
+function updateSoldStat(listings) {
+  const soldCount = listings.filter(l => l.is_sold).length;
+  if (statSoldCount) {
+    statSoldCount.textContent = soldCount > 0 ? soldCount : "✓";
+  }
+  if (soldCheckerStat) {
+    soldCheckerStat.classList.toggle("has-sold", soldCount > 0);
+  }
+  // Clear badge if no sold
+  if (soldCount === 0) {
+    chrome.action.setBadgeText({ text: "" });
+  }
+}
+
 // Delegated click handler for job list — handles dynamically rendered cards
 document.getElementById("jobList")?.addEventListener("click", async (e) => {
   // Generate Ad button
   const generateBtn = e.target.closest(".generate-btn");
   if (generateBtn && !generateBtn.disabled) {
-    const vin   = generateBtn.dataset.vin;
+    const vin = generateBtn.dataset.vin;
     const model = generateBtn.dataset.model;
 
     const { pending_review_queue = [] } =
@@ -102,13 +256,25 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     if (!item) return;
 
     reviewVehicle = item.vehicle;
-    reviewPhotos  = item.review_photos || {
-      exterior:   item.classified?.exterior   || [],
-      interior:   item.classified?.interior   || [],
-      additional: item.classified?.additional || [],
-      other:      item.classified?.other      || [],
-    };
 
+    if (item.classified) {
+      reviewPhotos = buildReviewPhotos(
+        item.classified,
+        item.photos_all || item.vehicle?.photos || [],
+        item.blocked_photos || [],
+        item.explicit_other || []
+      );
+    } else if (item.review_photos) {
+      reviewPhotos = item.review_photos;
+    } else {
+      reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
+    }
+
+    console.log("OrbitAds: reviewPhotos for modal:", {
+      exterior: reviewPhotos.exterior?.length,
+      interior: reviewPhotos.interior?.length,
+      additional: reviewPhotos.additional?.length,
+    });
     showGenerateModal(item.vehicle);
     return;
   }
@@ -131,29 +297,57 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   }
 
   // Card body click — open review screen
-  const card = e.target.closest(".job-card[data-type='review']");
-  if (card && e.target.tagName !== "BUTTON") {
-    const vin   = card.dataset.vin;
+  const card = e.target.closest(".job-card");
+  if (card && e.target.tagName !== "BUTTON" && e.target.tagName !== "A") {
+    const type = card.dataset.type;
+    const vin = card.dataset.vin;
     const model = card.dataset.model;
+    const jobId = card.dataset.jobId;
 
-    const { pending_review_queue = [] } =
-      await chrome.storage.local.get("pending_review_queue");
+    if (type === "review") {
+      const { pending_review_queue = [] } =
+        await chrome.storage.local.get("pending_review_queue");
+      const item = pending_review_queue.find(i =>
+        (vin && i.vehicle?.vin === vin) || i.vehicle?.model === model
+      );
+      if (item) {
+        reviewVehicle = item.vehicle;
+        reviewPhotos = item.review_photos || {
+          exterior: item.classified?.exterior || [],
+          interior: item.classified?.interior || [],
+          additional: item.classified?.additional || [],
+          other: item.classified?.other || [],
+        };
+        showReviewScreen(item);
+      }
+    } else if (type === "job") {
+      // Show completed job photos
+      const { queue = [] } = await chrome.storage.local.get("queue");
+      const job = queue.find(j => j.id === jobId);
+      if (!job) return;
 
-    const item = pending_review_queue.find(i =>
-      (vin && i.vehicle?.vin === vin) || i.vehicle?.model === model
-    );
+      const photosForVideo = job.vehicle.photos_for_video || [];
+      const allPhotos = job.vehicle.photos || [];
+      const videoPhotoSet = new Set(photosForVideo);
+      const remainingPhotos = allPhotos.filter(url => !videoPhotoSet.has(url));
 
-    if (!item) return;
+      reviewVehicle = job.vehicle;
+      reviewPhotos = {
+        exterior: photosForVideo.slice(0, 6),
+        interior: photosForVideo.slice(6, 8),
+        additional: photosForVideo.slice(8),
+        other: remainingPhotos,
+      };
 
-    reviewVehicle = item.vehicle;
-    reviewPhotos  = item.review_photos || {
-      exterior:   item.classified?.exterior   || [],
-      interior:   item.classified?.interior   || [],
-      additional: item.classified?.additional || [],
-      other:      item.classified?.other      || [],
-    };
-
-    showReviewScreen(item);
+      showReviewScreen({
+        vehicle: job.vehicle,
+        photos_all: allPhotos,
+        view_only: true,
+        completed_job: job,
+        classified: { exterior: photosForVideo.slice(0, 6), interior: photosForVideo.slice(6, 8), additional: photosForVideo.slice(8), other: [] },
+        review_photos: reviewPhotos,
+      });
+    }
   }
 });
 
@@ -464,6 +658,7 @@ async function loadRecentAds() {
   if (statAdsWeek) statAdsWeek.textContent =
     completed.filter(j => new Date(j.added_at).getTime() > weekAgo).length;
   if (statAdsTotal) statAdsTotal.textContent = completed.length;
+  updateSoldStat(listings);
 }
 
 function renderListings(listings) {
@@ -714,6 +909,12 @@ function attachCardHandlers(allCards) {
         });
 
         showFbListingScreen(listing, v);
+        // Save to sold vehicle checker immediately
+        chrome.runtime.sendMessage({
+          type: "MARK_LISTING_POSTED",
+          vehicle: v,
+          listing_url: v.listing_url,
+        });
       } catch (err) {
         btn.textContent = "📘 Post to FB";
         btn.disabled = false;
@@ -866,6 +1067,12 @@ document.getElementById("confirmGenerateBtn")?.addEventListener("click", () => {
 });
 
 async function generateAdWithOptions(videoType, theme, customScript) {
+  console.log("OrbitAds: reviewPhotos at generate time:", {
+    exterior: reviewPhotos.exterior?.length,
+    interior: reviewPhotos.interior?.length,
+    additional: reviewPhotos.additional?.length,
+    other: reviewPhotos.other?.length,
+  });
   if (!reviewVehicle) return;
 
   const allPhotos = [
@@ -873,6 +1080,13 @@ async function generateAdWithOptions(videoType, theme, customScript) {
     ...(reviewPhotos.interior || []),
     ...(reviewPhotos.additional || []),
   ];
+
+  console.log("OrbitAds: generating with photos:", {
+    exterior: reviewPhotos.exterior?.length,
+    interior: reviewPhotos.interior?.length,
+    additional: reviewPhotos.additional?.length,
+    total: allPhotos.length,
+  });
 
   if (allPhotos.length === 0) {
     alert("No photos selected. Please click the vehicle card to review photos first.");
@@ -883,7 +1097,7 @@ async function generateAdWithOptions(videoType, theme, customScript) {
     ...reviewVehicle,
     photos_for_video: allPhotos,
   };
-  console.log("OrbitAds: generating with custom_script:", customScript?.slice(0,50));
+  console.log("OrbitAds: generating with custom_script:", customScript?.slice(0, 50));
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
@@ -1750,6 +1964,12 @@ facebookBtn.addEventListener("click", async () => {
     });
 
     showFbListingScreen(listing, v);
+    // Save to sold vehicle checker immediately
+    chrome.runtime.sendMessage({
+      type: "MARK_LISTING_POSTED",
+      vehicle: v,
+      listing_url: v.listing_url,
+    });
 
   } catch (err) {
     console.error("Facebook listing error:", err);

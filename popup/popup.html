@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OrbitAds</title>
   <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
 
   <!-- ── Header ───────────────────────────────────────────── -->
@@ -18,9 +20,9 @@
         <span id="userName"></span>
       </div>
       <div class="header-btns">
-        <button class="icon-btn" id="helpBtn"     title="Help">?</button>
+        <button class="icon-btn" id="helpBtn" title="Help">?</button>
         <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
-        <button class="icon-btn" id="siteBtn"     title="Visit dealersorbit.com">↗</button>
+        <button class="icon-btn" id="siteBtn" title="Visit dealersorbit.com">↗</button>
       </div>
     </div>
   </header>
@@ -28,7 +30,8 @@
   <!-- ── Login screen ─────────────────────────────────────── -->
   <div class="screen" id="loginScreen">
     <div class="login-logo">
-      <span class="logo-orbit" style="font-size:32px">Orbit</span><span class="logo-ads" style="font-size:32px">Ads</span>
+      <span class="logo-orbit" style="font-size:32px">Orbit</span><span class="logo-ads"
+        style="font-size:32px">Ads</span>
     </div>
     <p class="screen-subtitle">Sign in to start generating ads</p>
     <div class="form-group">
@@ -68,10 +71,14 @@
         <div class="stat-value" id="statFbPosted">0</div>
         <div class="stat-label">FB posted</div>
       </div>
+      <div class="stat stat-sold" id="soldCheckerStat" style="cursor:pointer" title="Click to check sold vehicles">
+        <div class="stat-value" id="statSoldCount">✓</div>
+        <div class="stat-label">Sold check</div>
+      </div>
     </div>
 
     <!-- Notifications -->
-    <div id="soldBanner"  class="sold-banner"   style="display:none"></div>
+    <div id="soldBanner" class="sold-banner" style="display:none"></div>
     <div id="staleBanner" class="resume-banner" style="display:none"></div>
 
     <!-- FB Countdown -->
@@ -161,7 +168,8 @@
       <div class="modal-step" id="modalStep3" style="display:none">
         <button class="btn-back-modal" id="backToStep2">← Back</button>
         <p class="modal-question">Describe your ad style</p>
-        <p class="modal-hint">Tell us the vibe, a joke to open with, or paste a script idea. Claude will write a script based on your input.</p>
+        <p class="modal-hint">Tell us the vibe, a joke to open with, or paste a script idea. Claude will write a script
+          based on your input.</p>
         <textarea id="customPrompt" class="custom-prompt-input"
           placeholder="e.g. Start with a funny joke about traffic, then talk about how perfect this truck is for the weekend warrior who needs to haul stuff but also wants to look good doing it..."></textarea>
         <button class="btn-primary" id="previewScriptBtn">Preview Script →</button>
@@ -267,11 +275,11 @@
 
     <div class="fb-posting-status" id="fbPostingStatus" style="display:none">
       <div class="fb-status-label" id="fbStatusLabel"></div>
-      <div class="fb-queue-list"   id="fbQueueList"></div>
+      <div class="fb-queue-list" id="fbQueueList"></div>
     </div>
 
     <div class="fb-listing-actions">
-      <button class="btn-facebook"  id="openFbBtn">📘 Open Facebook + Fill Form</button>
+      <button class="btn-facebook" id="openFbBtn">📘 Open Facebook + Fill Form</button>
       <button class="btn-secondary" id="copyAllBtn">📋 Copy All to Clipboard</button>
     </div>
   </div>
@@ -322,7 +330,7 @@
         <span class="settings-value">Basic — $99/month</span>
       </div>
       <a href="https://dealersorbit.com/billing" target="_blank" class="btn-secondary"
-         style="display:block;text-align:center;text-decoration:none;margin-top:8px">
+        style="display:block;text-align:center;text-decoration:none;margin-top:8px">
         Manage Subscription
       </a>
     </div>
@@ -333,5 +341,18 @@
   </div>
 
   <script src="popup.js"></script>
+  <!-- Sold vehicles modal -->
+  <div class="modal-overlay" id="soldModal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">🚨 Sold Vehicle Check</div>
+        <button class="modal-close" id="closeSoldModal">✕</button>
+      </div>
+      <div id="soldModalContent">
+        <p style="color:#6b7280;font-size:13px">Checking your listings...</p>
+      </div>
+    </div>
+  </div>
 </body>
+
 </html>

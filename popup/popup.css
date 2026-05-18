@@ -1388,3 +1388,9 @@ body {
   color: #1a56db;
   font-variant-numeric: tabular-nums;
 }
+
+.stat-sold { cursor: pointer; transition: background 0.2s; border-radius: 0 8px 8px 0; }
+.stat-sold:hover { background: #f9fafb; }
+.stat-sold.has-sold { background: #fee2e2; }
+.stat-sold.has-sold .stat-value { color: #dc2626; }
+.stat-sold.has-sold .stat-label { color: #dc2626; }

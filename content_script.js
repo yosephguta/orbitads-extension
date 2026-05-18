@@ -550,8 +550,10 @@ function createImportButton(vehicleData) {
     // Set a timeout to re-enable button if message fails
     const timeout = setTimeout(() => {
       btn.disabled = false;
-      btn.textContent = "⊕ Import to OrbitAds";
-      btn.style.background = "";
+      btn.textContent = "↺ Reload page to retry";
+      btn.style.background = "#dc2626";
+      btn.title = "Import timed out. Reload the page and try again.";
+      btn.onclick = () => window.location.reload();
       console.log("OrbitAds: Import timed out — re-enabling button");
     }, 15000); // 15 second timeout
 
@@ -573,9 +575,22 @@ function createImportButton(vehicleData) {
     } catch (err) {
       clearTimeout(timeout);
       console.error("OrbitAds: Failed to send message:", err);
-      btn.disabled = false;
-      btn.textContent = "⊕ Import to OrbitAds";
-      btn.style.background = "";
+
+      // Check if extension context was invalidated
+      if (err.message?.includes("Extension context invalidated") ||
+        err.message?.includes("context invalidated")) {
+        btn.disabled = false;
+        btn.textContent = "⚠️ Please close & reopen this tab";
+        btn.style.background = "#dc2626";
+        btn.title = "The OrbitAds extension was updated. Close this tab and open a new one to continue.";
+      } else {
+        // Generic retry error
+        btn.disabled = false;
+        btn.textContent = "↺ Reload page to retry";
+        btn.style.background = "#dc2626";
+        btn.title = "Something went wrong. Reload the page and try again.";
+        btn.onclick = () => window.location.reload();
+      }
     }
   });
   return btn;

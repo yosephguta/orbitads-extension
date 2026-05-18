@@ -192,7 +192,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "QUEUE_REVIEWED") {
-    addToQueue(message.vehicle, message.video_type || "walkaround", message.theme || "family")
+    addToQueue(message.vehicle, message.video_type || "walkaround", message.theme || "family", message.custom_script || null)
       .then(result => sendResponse({ success: true, queueLength: result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -368,13 +368,17 @@ async function enrichSingleVehicle(vehicle) {
   pending_review_queue.push(reviewItem);
   await chrome.storage.local.set({
     pending_review_queue,
-    pending_review: null,  // clear any stuck pending review
+    pending_review: null,
   });
 
   const total = pending_review_queue.length;
   chrome.action.setBadgeText({ text: String(total) });
   chrome.action.setBadgeBackgroundColor({ color: "#1a56db" });
   console.log(`OrbitAds: Added ${vehicle.model} to queue. Total: ${total}`);
+
+  // ── Auto-classify immediately ─────────────────────────
+  console.log(`OrbitAds: Auto-classifying ${vehicle.model}...`);
+  classifyInBackground(vehicle);
 
   // Open side panel
   chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id })
@@ -593,7 +597,7 @@ function parseTrimFromTitle(title, year, make, model) {
 
 
 // ── Queue management ──────────────────────────────────────────
-async function addToQueue(vehicle, videoType = "walkaround", theme = "family") {
+async function addToQueue(vehicle, videoType = "walkaround", theme = "family", customScript = null) {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
 
@@ -615,6 +619,7 @@ async function addToQueue(vehicle, videoType = "walkaround", theme = "family") {
     vehicle: vehicle,
     video_type: videoType,        // ← store video type
     status: "waiting",
+    custom_script: customScript || null,  // ← add this
     theme: theme,        // ← now correctly passed
     added_at: new Date().toISOString(),
     progress: 0,
@@ -704,11 +709,18 @@ async function realProcessing(job, queue) {
     vin: v.vin || null,
     listing_url: v.listing_url || null,
     theme: job.theme || "family",
-    video_type: job.video_type || "walkaround",   // ← add this
+    video_type: job.video_type || "walkaround",
     car_photo_urls: v.photos_for_video?.length
       ? JSON.stringify(v.photos_for_video)
       : null,
+    custom_script: job.custom_script || null,  // ← add this line
   };
+
+  console.log("OrbitAds: Sending job to backend:", {
+    custom_script: job.custom_script?.slice(0, 50),
+    theme: job.theme,
+    video_type: job.video_type,
+  });
 
   const createResp = await fetch(`${API_BASE}/jobs/`, {
     method: "POST",

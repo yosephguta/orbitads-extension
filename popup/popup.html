@@ -1,13 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OrbitAds</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-
 <body>
 
   <!-- ── Header ───────────────────────────────────────────── -->
@@ -20,10 +18,9 @@
         <span id="userName"></span>
       </div>
       <div class="header-btns">
-        <button class="icon-btn" id="helpBtn" title="Help">?</button>
+        <button class="icon-btn" id="helpBtn"     title="Help">?</button>
         <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
-        <button class="icon-btn" id="siteBtn" title="Visit dealersorbit.com">↗</button>
-        <button class="icon-btn" id="logoutBtn" title="Sign out" style="display:none">⏻</button>
+        <button class="icon-btn" id="siteBtn"     title="Visit dealersorbit.com">↗</button>
       </div>
     </div>
   </header>
@@ -31,31 +28,26 @@
   <!-- ── Login screen ─────────────────────────────────────── -->
   <div class="screen" id="loginScreen">
     <div class="login-logo">
-      <span class="logo-orbit" style="font-size:32px">Orbit</span><span class="logo-ads"
-        style="font-size:32px">Ads</span>
+      <span class="logo-orbit" style="font-size:32px">Orbit</span><span class="logo-ads" style="font-size:32px">Ads</span>
     </div>
     <p class="screen-subtitle">Sign in to start generating ads</p>
-
     <div class="form-group">
       <label for="email">Email</label>
       <input type="email" id="email" placeholder="you@dealership.com" autocomplete="email">
     </div>
-
     <div class="form-group">
       <label for="password">Password</label>
       <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
     </div>
-
     <div class="error-msg" id="loginError"></div>
     <button class="btn-primary" id="loginBtn">Sign In</button>
-
     <p class="screen-hint">
       Don't have an account?
       <a href="https://dealersorbit.com" target="_blank">Sign up at dealersorbit.com</a>
     </p>
   </div>
 
-  <!-- ── Dashboard screen (main screen when logged in) ─────── -->
+  <!-- ── Dashboard screen ─────────────────────────────────── -->
   <div class="screen" id="dashboardScreen" style="display:none">
 
     <!-- Stats bar -->
@@ -77,76 +69,37 @@
         <div class="stat-label">FB posted</div>
       </div>
     </div>
-    <!-- Countdown banner -->
+
+    <!-- Notifications -->
+    <div id="soldBanner"  class="sold-banner"   style="display:none"></div>
+    <div id="staleBanner" class="resume-banner" style="display:none"></div>
+
+    <!-- FB Countdown -->
     <div id="fbCountdownBanner" class="fb-countdown-banner" style="display:none">
       <span>📘 Next safe Facebook post in</span>
       <span id="fbCountdownTimer" class="fb-countdown-time">--:--</span>
     </div>
 
-    <!-- Sold notification banner -->
-    <div id="soldBanner" class="sold-banner" style="display:none"></div>
-
-    <!-- Stale notification banner -->
-    <div id="staleBanner" class="resume-banner" style="display:none"></div>
-
-    <!-- Resume pending review banner -->
-    <!-- <div id="resumeBanner" class="resume-banner" style="display:none"></div> -->
-
-    <!-- Review queue cards banner -->
-    <div id="reviewQueueCards" style="display:none"></div>
-
-    <!-- Ad theme selector -->
+    <!-- Queue -->
     <div class="section-header">
-      <span class="section-title">Ad Settings</span>
-    </div>
-    <div class="settings-row">
-      <div class="setting-item">
-        <label>Theme</label>
-        <select id="themeSelect">
-          <option value="family">Family</option>
-          <option value="outdoorsy">Outdoorsy</option>
-          <option value="luxury">Luxury</option>
-          <option value="sporty">Sporty</option>
-          <option value="commuter">Commuter</option>
-          <option value="eco">Eco</option>
-          <option value="first_car">First Car</option>
-        </select>
-      </div>
-      <div class="setting-item">
-        <label>Video type</label>
-        <select id="videoTypeSelectDash">
-          <option value="walkaround">🚗 Walkaround</option>
-          <option value="avatar">⭐ Avatar</option>
-        </select>
-      </div>
-    </div>
-
-    <!-- Generation queue -->
-    <div class="section-header">
-      <span class="section-title">Generation Queue</span>
+      <span class="section-title">Your Vehicles</span>
       <button class="btn-link-sm" id="clearDoneBtn">Clear done</button>
     </div>
 
     <div id="queueEmpty" class="empty-state" style="display:none">
       <div class="empty-icon">🚗</div>
-      <p class="empty-title">No vehicles in queue</p>
+      <p class="empty-title">No vehicles yet</p>
       <p class="empty-hint">Browse your inventory and click<br><strong>⊕ Import to OrbitAds</strong></p>
     </div>
 
     <div id="jobList"></div>
 
-    <!-- Facebook posting queue -->
-    <div class="section-header" id="fbQueueHeader" style="display:none">
-      <span class="section-title">Facebook Queue</span>
-      <span class="section-meta" id="fbQueueMeta"></span>
-    </div>
-    <div id="fbQueueItems"></div>
-
-    <!-- Recent ads history -->
-    <div class="section-header">
+    <!-- Recent Ads — collapsible -->
+    <div class="section-header" style="margin-top:8px">
       <span class="section-title">Recent Ads</span>
+      <button class="btn-link-sm" id="toggleRecentBtn">Show</button>
     </div>
-    <div id="recentAds">
+    <div id="recentAds" style="display:none">
       <div class="empty-hint" style="text-align:center;padding:12px;color:#9ca3af">
         Your completed ads will appear here
       </div>
@@ -154,7 +107,81 @@
 
   </div>
 
-  <!-- ── Review screen ─────────────────────────────────────── -->
+  <!-- ── Generate Ad Modal ─────────────────────────────────── -->
+  <div class="modal-overlay" id="generateModal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title" id="modalVehicleTitle">Generate Ad</div>
+        <button class="modal-close" id="closeModal">✕</button>
+      </div>
+
+      <!-- Step 1: Ad type -->
+      <div class="modal-step" id="modalStep1">
+        <p class="modal-question">What do you want to create?</p>
+        <button class="modal-option" data-type="photos">
+          <span class="modal-option-icon">📸</span>
+          <div>
+            <div class="modal-option-title">Photos + Listing only</div>
+            <div class="modal-option-desc">Facebook listing with photos — no video</div>
+          </div>
+        </button>
+        <button class="modal-option" data-type="walkaround">
+          <span class="modal-option-icon">🎬</span>
+          <div>
+            <div class="modal-option-title">Slideshow Video</div>
+            <div class="modal-option-desc">Professional photo slideshow with voiceover</div>
+          </div>
+        </button>
+        <button class="modal-option" data-type="avatar">
+          <span class="modal-option-icon">🎥</span>
+          <div>
+            <div class="modal-option-title">Avatar Video (me talking)</div>
+            <div class="modal-option-desc">Video with your face and voice — most engaging</div>
+          </div>
+        </button>
+      </div>
+
+      <!-- Step 2: Theme -->
+      <div class="modal-step" id="modalStep2" style="display:none">
+        <button class="btn-back-modal" id="backToStep1">← Back</button>
+        <p class="modal-question">Pick a theme for your ad</p>
+        <div class="theme-grid">
+          <button class="theme-btn" data-theme="family">👨‍👩‍👧 Family</button>
+          <button class="theme-btn" data-theme="sporty">🏎️ Sporty</button>
+          <button class="theme-btn" data-theme="luxury">💎 Luxury</button>
+          <button class="theme-btn" data-theme="outdoorsy">🏔️ Outdoorsy</button>
+          <button class="theme-btn" data-theme="commuter">🏙️ Commuter</button>
+          <button class="theme-btn" data-theme="eco">🌿 Eco</button>
+          <button class="theme-btn" data-theme="first_car">🎉 First Car</button>
+          <button class="theme-btn" data-theme="custom">✏️ Custom</button>
+        </div>
+      </div>
+
+      <!-- Step 3: Custom theme -->
+      <div class="modal-step" id="modalStep3" style="display:none">
+        <button class="btn-back-modal" id="backToStep2">← Back</button>
+        <p class="modal-question">Describe your ad style</p>
+        <p class="modal-hint">Tell us the vibe, a joke to open with, or paste a script idea. Claude will write a script based on your input.</p>
+        <textarea id="customPrompt" class="custom-prompt-input"
+          placeholder="e.g. Start with a funny joke about traffic, then talk about how perfect this truck is for the weekend warrior who needs to haul stuff but also wants to look good doing it..."></textarea>
+        <button class="btn-primary" id="previewScriptBtn">Preview Script →</button>
+      </div>
+
+      <!-- Step 4: Script preview -->
+      <div class="modal-step" id="modalStep4" style="display:none">
+        <button class="btn-back-modal" id="backToStep3">← Back</button>
+        <p class="modal-question">Review your script</p>
+        <p class="modal-hint">Edit if needed, then generate your ad.</p>
+        <textarea id="scriptPreview" class="script-preview-input"></textarea>
+        <div class="modal-actions">
+          <button class="btn-primary" id="confirmGenerateBtn">Generate Ad →</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Review screen (photo editing) ────────────────────── -->
   <div class="screen" id="reviewScreen" style="display:none">
     <div class="review-header">
       <div class="review-header-top">
@@ -164,7 +191,9 @@
       <div id="reviewMeta" class="review-meta"></div>
     </div>
 
-    <div class="review-status" id="reviewStatus">Classifying photos...</div>
+    <div class="review-status" id="reviewStatus" style="display:none">
+      🔍 Classifying photos... this takes about 30 seconds
+    </div>
 
     <div id="activeJobStatus" class="active-job-status" style="display:none">
       <div class="active-job-label" id="activeJobLabel"></div>
@@ -187,23 +216,12 @@
     <div id="reviewSections"></div>
 
     <div class="review-actions">
-      <div class="video-type-row">
-        <label for="videoTypeSelect">Video type:</label>
-        <select id="videoTypeSelect">
-          <option value="walkaround">🚗 Walkaround only (free)</option>
-          <option value="avatar">⭐ Avatar + Walkaround (premium)</option>
-        </select>
-      </div>
-      <div class="fb-success-banner" id="fbSuccessBanner" style="display:none">
-        ✓ Listing copied to clipboard
-      </div>
       <div class="review-actions-buttons">
         <label class="upload-label">
           <input type="file" id="uploadInput" accept="image/*" multiple style="display:none">
           + Upload
         </label>
-        <button class="btn-facebook" id="facebookBtn" disabled>📘 Facebook</button>
-        <button class="btn-primary" id="generateBtn" disabled>Generate Ad →</button>
+        <button class="btn-secondary" id="savePhotosBtn">Save Photos</button>
       </div>
     </div>
   </div>
@@ -249,11 +267,11 @@
 
     <div class="fb-posting-status" id="fbPostingStatus" style="display:none">
       <div class="fb-status-label" id="fbStatusLabel"></div>
-      <div class="fb-queue-list" id="fbQueueList"></div>
+      <div class="fb-queue-list"   id="fbQueueList"></div>
     </div>
 
     <div class="fb-listing-actions">
-      <button class="btn-facebook" id="openFbBtn">📘 Open Facebook + Fill Form</button>
+      <button class="btn-facebook"  id="openFbBtn">📘 Open Facebook + Fill Form</button>
       <button class="btn-secondary" id="copyAllBtn">📋 Copy All to Clipboard</button>
     </div>
   </div>
@@ -282,19 +300,16 @@
     <div class="settings-section">
       <div class="settings-section-title">Voice & Avatar</div>
       <div class="form-group">
-        <label>ElevenLabs Voice ID</label>
-        <input type="text" id="voiceIdInput" placeholder="Your voice ID">
+        <label>My Voice ID <span style="font-weight:400;color:#9ca3af">(ElevenLabs)</span></label>
+        <input type="text" id="voiceIdInput" placeholder="Paste your voice ID here">
       </div>
       <div class="form-group">
-        <label>HeyGen Avatar ID</label>
-        <input type="text" id="avatarIdInput" placeholder="Your avatar ID">
+        <label>My Video Avatar ID <span style="font-weight:400;color:#9ca3af">(HeyGen)</span></label>
+        <input type="text" id="avatarIdInput" placeholder="Paste your avatar ID here">
       </div>
       <div class="form-group">
-        <label>Phone Number (optional)</label>
+        <label>Phone Number <span style="font-weight:400;color:#9ca3af">(optional — shown in ads)</span></label>
         <input type="tel" id="phoneInput" placeholder="(410) 555-0100">
-        <div style="font-size:10px;color:#9ca3af;margin-top:3px">
-          If set, will be included in your video scripts and FB listings
-        </div>
       </div>
       <button class="btn-primary" id="saveSettingsBtn">Save</button>
       <div class="settings-saved" id="settingsSaved" style="display:none">✓ Saved</div>
@@ -307,7 +322,7 @@
         <span class="settings-value">Basic — $99/month</span>
       </div>
       <a href="https://dealersorbit.com/billing" target="_blank" class="btn-secondary"
-        style="display:block;text-align:center;text-decoration:none;margin-top:8px">
+         style="display:block;text-align:center;text-decoration:none;margin-top:8px">
         Manage Subscription
       </a>
     </div>
@@ -319,5 +334,4 @@
 
   <script src="popup.js"></script>
 </body>
-
 </html>

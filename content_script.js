@@ -993,8 +993,8 @@ async function uploadVideoToFacebook(fbListing) {
     videoInput.dispatchEvent(new Event("change", { bubbles: true }));
     videoInput.dispatchEvent(new Event("input", { bubbles: true }));
 
-    console.log("OrbitAds: ✓ Video uploaded to Facebook");
-    await sleep(4000); // Facebook needs time to process video
+    console.log("OrbitAds: ✓ Video uploaded to Facebook — waiting for processing...");
+    await sleep(4000); // wait 4 seconds for Facebook to process
 
   } catch (err) {
     console.error("OrbitAds: Video upload failed:", err);
@@ -1138,10 +1138,10 @@ function showFbAutoFillBanner() {
     line-height: 1.5;
   `;
   banner.innerHTML = `
-    ✓ <strong>OrbitAds filled your listing!</strong><br>
-    <span style="font-weight:400;font-size:13px">
-      Review the details and click <strong>Next</strong> or <strong>Publish</strong> when ready.
-    </span>
+  ✓ <strong>OrbitAds filled your listing!</strong><br>
+  <span style="font-weight:400;font-size:13px">
+    ⏳ Wait 30 seconds for video to process, then review and click <strong>Next</strong>.
+  </span>
     <div style="margin-top:8px">
       <button id="orbitads-confirm-post" style="
         background:white;color:#1877f2;border:none;

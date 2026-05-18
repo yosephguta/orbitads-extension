@@ -596,6 +596,17 @@ async function renderQueue() {
           if (!resp.ok) throw new Error("Failed to generate listing");
           const listing = await resp.json();
 
+          console.log("OrbitAds: Storing fb_listing with video_url:", job.result_url);
+          await chrome.storage.local.set({
+            fb_listing: {
+              ...listing,
+              vehicle: v,
+              reviewed_photos: v.photos_for_video || [],
+              video_url: job.result_url || null,
+              created_at: new Date().toISOString(),
+            }
+          });
+
           // Store fb_listing WITH video URL from this completed job
           await chrome.storage.local.set({
             fb_listing: {

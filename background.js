@@ -855,10 +855,10 @@ function calculateNextPostTime(queue, history) {
 }
 
 async function processFbQueue() {
-  const { fb_post_queue = [] } = await chrome.storage.local.get("fb_post_queue");
+  const { fb_post_queue = [], queue = [] } =
+    await chrome.storage.local.get(["fb_post_queue", "queue"]);
   const now = Date.now();
 
-  // Find next item ready to post
   const nextItem = fb_post_queue.find(
     j => j.status === "waiting" && new Date(j.post_after).getTime() <= now
   );
@@ -882,18 +882,28 @@ async function processFbQueue() {
   nextItem.status = "posting";
   await chrome.storage.local.set({ fb_post_queue });
 
-  // Store the listing data for the content script
+  // Find the video URL from the generation queue
+  const v = nextItem.vehicle;
+  const completedJob = queue.find(j =>
+    j.status === "completed" && (
+      (v.vin && j.vehicle?.vin === v.vin) ||
+      (j.vehicle?.model === v.model && j.vehicle?.year === v.year)
+    )
+  );
+  const videoUrl = completedJob?.result_url || nextItem.listing?.video_url || null;
+  console.log("OrbitAds FB: video_url for upload:", videoUrl);
+
   await chrome.storage.local.set({
     fb_listing: {
       ...nextItem.listing,
       vehicle: nextItem.vehicle,
-      reviewed_photos: nextItem.listing.reviewed_photos || [],
+      reviewed_photos: nextItem.listing?.reviewed_photos || v.photos_for_video || [],
+      video_url: videoUrl,
       queue_item_id: nextItem.id,
       created_at: new Date().toISOString(),
     }
   });
 
-  // Open Facebook Marketplace create vehicle page
   chrome.tabs.create({
     url: "https://www.facebook.com/marketplace/create/vehicle",
   });

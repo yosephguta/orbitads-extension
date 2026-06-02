@@ -118,7 +118,7 @@ const DEALERSHIP_CONFIGS = {
   },
 };
 
-const API_BASE = "http://localhost:8000/api/v1";
+const API_BASE = "https://api.dealersorbit.com/api/v1";
 
 function getConfigForDomain(domain) {
   console.log("OrbitAds: Looking up domain:", domain);
@@ -611,7 +611,7 @@ async function markListingPosted(vehicle, listingUrl) {
 
     if (match) {
       await fetch(`${API_BASE}/listings/${match.id}/posted`, {
-        method:  "PATCH",
+        method: "PATCH",
         headers: { "Authorization": `Bearer ${token}` },
       });
       console.log(`OrbitAds: Marked listing ${match.id} as posted, URL: ${listingUrl}`);
@@ -991,13 +991,13 @@ async function confirmFbPosted(queueItemId) {
 
 // ── Daily sold vehicle checker ────────────────────────────────
 async function runDailySoldCheck() {
-  const { token, last_sold_check } = 
+  const { token, last_sold_check } =
     await chrome.storage.local.get(["token", "last_sold_check"]);
 
   if (!token) return;
 
   // Only run once per 6 hours
-  const now      = Date.now();
+  const now = Date.now();
   const sixHours = 6 * 60 * 60 * 1000;
   if (last_sold_check && now - last_sold_check < sixHours) return;
 
@@ -1009,7 +1009,7 @@ async function runDailySoldCheck() {
     if (!listingsResp.ok) return;
 
     const listings = await listingsResp.json();
-    
+
     // Only check listings that are posted and not already marked sold
     const activeIds = listings
       .filter(l => l.fb_posted && !l.is_sold && l.listing_url)
@@ -1023,9 +1023,9 @@ async function runDailySoldCheck() {
     console.log(`OrbitAds: Checking ${activeIds.length} posted listings for sold status...`);
 
     const checkResp = await fetch(`${API_BASE}/listings/check-sold`, {
-      method:  "POST",
+      method: "POST",
       headers: {
-        "Content-Type":  "application/json",
+        "Content-Type": "application/json",
         "Authorization": `Bearer ${token}`,
       },
       body: JSON.stringify({ listing_ids: activeIds }),
@@ -1036,19 +1036,19 @@ async function runDailySoldCheck() {
     const { sold_ids } = await checkResp.json();
 
     // Store sold notifications
-    const { sold_notifications = [] } = 
+    const { sold_notifications = [] } =
       await chrome.storage.local.get("sold_notifications");
-    
+
     const newSold = sold_ids.filter(id => !sold_notifications.includes(id));
-    
+
     if (newSold.length > 0) {
       const updatedNotifications = [...sold_notifications, ...newSold];
       await chrome.storage.local.set({ sold_notifications: updatedNotifications });
-      
+
       // Red badge
       chrome.action.setBadgeText({ text: "🔴" });
       chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
-      
+
       console.log(`OrbitAds: ${newSold.length} vehicles may be sold!`);
     }
 

@@ -13,7 +13,7 @@
 // ── Config ────────────────────────────────────────────────────
 // Change to https://api.dealersorbit.com when deployed
 // ── Config ────────────────────────────────────────────────────
-const API_BASE = "http://localhost:8000/api/v1";
+const API_BASE = "https://api.dealersorbit.com/api/v1";
 
 // ── Elements ──────────────────────────────────────────────────
 const dashboardScreen = document.getElementById("dashboardScreen");

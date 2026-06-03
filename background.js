@@ -120,6 +120,12 @@ const DEALERSHIP_CONFIGS = {
 
 const API_BASE = "https://api.dealersorbit.com/api/v1";
 
+async function handleExpiredToken() {
+  await chrome.storage.local.remove(["token", "user"]);
+  await chrome.storage.local.set({ session_expired: true });
+  console.warn("OrbitAds: Session expired — user will be prompted to sign in");
+}
+
 function getConfigForDomain(domain) {
   console.log("OrbitAds: Looking up domain:", domain);
 
@@ -419,6 +425,7 @@ async function classifyInBackground(vehicle) {
       body: JSON.stringify({ photo_urls: photosToClassify }),
     });
 
+    if (resp.status === 401) { await handleExpiredToken(); return; }
     if (!resp.ok) return;
 
     const classified = await resp.json();
@@ -601,6 +608,7 @@ async function markListingPosted(vehicle, listingUrl) {
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
       headers: { "Authorization": `Bearer ${token}` },
     });
+    if (listingsResp.status === 401) { await handleExpiredToken(); return; }
     if (!listingsResp.ok) return;
 
     const listings = await listingsResp.json();
@@ -767,6 +775,7 @@ async function realProcessing(job, queue) {
   });
 
   if (!createResp.ok) {
+    if (createResp.status === 401) await handleExpiredToken();
     const err = await createResp.json().catch(() => ({}));
     throw new Error(err.detail || `API error: ${createResp.status}`);
   }
@@ -792,6 +801,7 @@ async function realProcessing(job, queue) {
       headers: { "Authorization": `Bearer ${token}` },
     });
 
+    if (pollResp.status === 401) { await handleExpiredToken(); throw new Error("Session expired"); }
     if (!pollResp.ok) continue;
 
     const pollData = await pollResp.json();
@@ -1006,6 +1016,7 @@ async function runDailySoldCheck() {
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
       headers: { "Authorization": `Bearer ${token}` },
     });
+    if (listingsResp.status === 401) { await handleExpiredToken(); return; }
     if (!listingsResp.ok) return;
 
     const listings = await listingsResp.json();
@@ -1031,6 +1042,7 @@ async function runDailySoldCheck() {
       body: JSON.stringify({ listing_ids: activeIds }),
     });
 
+    if (checkResp.status === 401) { await handleExpiredToken(); return; }
     if (!checkResp.ok) return;
 
     const { sold_ids } = await checkResp.json();

@@ -74,6 +74,26 @@ const soldModal = document.getElementById("soldModal");
 const soldCheckerStat = document.getElementById("soldCheckerStat");
 const statSoldCount = document.getElementById("statSoldCount");
 
+// ── Session helpers ───────────────────────────────────────────
+async function handleSessionExpired() {
+  if (queueInterval) { clearInterval(queueInterval); queueInterval = null; }
+  await chrome.storage.local.remove(["token", "user"]);
+  userInfo.style.display = "none";
+  loginError.textContent = "Your session has expired. Please sign in again.";
+  showScreen(loginScreen);
+}
+
+// Drop-in replacement for fetch() on authenticated calls.
+// Intercepts 401 responses and logs the user out automatically.
+async function apiFetch(url, options = {}) {
+  const resp = await fetch(url, options);
+  if (resp.status === 401) {
+    await handleSessionExpired();
+    throw new Error("session_expired");
+  }
+  return resp;
+}
+
 // ── State ──────────────────────────────────────────────────────
 let currentFbListing = null;
 let queueInterval = null;
@@ -115,7 +135,7 @@ async function loadSoldModalContent() {
 
   try {
     // Get listings from backend
-    const resp = await fetch(`${API_BASE}/listings/`, {
+    const resp = await apiFetch(`${API_BASE}/listings/`, {
       headers: { "Authorization": `Bearer ${token}` },
     });
     if (!resp.ok) throw new Error("Failed");
@@ -137,7 +157,7 @@ async function loadSoldModalContent() {
     // Trigger a fresh check
     const activeIds = active.map(l => l.id);
     if (activeIds.length > 0) {
-      const checkResp = await fetch(`${API_BASE}/listings/check-sold`, {
+      const checkResp = await apiFetch(`${API_BASE}/listings/check-sold`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -150,7 +170,7 @@ async function loadSoldModalContent() {
         const { sold_ids } = await checkResp.json();
         if (sold_ids.length > 0) {
           // Refresh listings after check
-          const refreshResp = await fetch(`${API_BASE}/listings/`, {
+          const refreshResp = await apiFetch(`${API_BASE}/listings/`, {
             headers: { "Authorization": `Bearer ${token}` },
           });
           if (refreshResp.ok) {
@@ -296,6 +316,31 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     return;
   }
 
+  // Per-card clear button
+  const clearBtn = e.target.closest(".clear-card-btn");
+  if (clearBtn) {
+    const card = clearBtn.closest(".job-card");
+    if (!card) return;
+    const type = card.dataset.type;
+    const jobId = card.dataset.jobId;
+    const vin = card.dataset.vin;
+    const model = card.dataset.model;
+
+    if (type === "review") {
+      const { pending_review_queue = [] } = await chrome.storage.local.get("pending_review_queue");
+      const updated = pending_review_queue.filter(i =>
+        vin ? i.vehicle?.vin !== vin : i.vehicle?.model !== model
+      );
+      await chrome.storage.local.set({ pending_review_queue: updated });
+      chrome.action.setBadgeText({ text: updated.length > 0 ? String(updated.length) : "" });
+    } else {
+      const { queue = [] } = await chrome.storage.local.get("queue");
+      await chrome.storage.local.set({ queue: queue.filter(j => j.id !== jobId) });
+    }
+    renderQueue();
+    return;
+  }
+
   // Card body click — open review screen
   const card = e.target.closest(".job-card");
   if (card && e.target.tagName !== "BUTTON" && e.target.tagName !== "A") {
@@ -389,7 +434,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
   const avatarId = document.getElementById("avatarIdInput").value.trim();
   const phone = document.getElementById("phoneInput")?.value.trim();
 
-  const resp = await fetch(`${API_BASE}/auth/me`, {
+  const resp = await apiFetch(`${API_BASE}/auth/me`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -451,6 +496,17 @@ async function init() {
   await chrome.storage.local.remove("pending_review");
 
   if (token && user) {
+    // Validate token is still accepted by the server.
+    // Only logs out on 401 — network errors (offline) keep the session.
+    const meResp = await fetch(`${API_BASE}/auth/me`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    }).catch(() => null);
+
+    if (meResp && meResp.status === 401) {
+      await handleSessionExpired();
+      return;
+    }
+
     showLoggedIn(user);
     renderQueue();
     if (queueInterval) clearInterval(queueInterval);
@@ -602,7 +658,7 @@ async function loadRecentAds() {
   // Try backend first
   if (token) {
     try {
-      const resp = await fetch(`${API_BASE}/listings/`, {
+      const resp = await apiFetch(`${API_BASE}/listings/`, {
         headers: { "Authorization": `Bearer ${token}` },
       });
       if (resp.ok) {
@@ -613,7 +669,7 @@ async function loadRecentAds() {
         }
       }
     } catch (err) {
-      console.error("OrbitAds: listings fetch failed:", err);
+      if (err.message !== "session_expired") console.error("OrbitAds: listings fetch failed:", err);
     }
   }
 
@@ -710,6 +766,14 @@ async function renderQueue() {
   if (fbListingScreen?.style.display !== "none") return;
   if (settingsScreen?.style.display !== "none") return;
   if (generateModal?.style.display !== "none") return;
+
+  // Pick up session_expired flag set by background.js
+  const { session_expired } = await chrome.storage.local.get("session_expired");
+  if (session_expired) {
+    await chrome.storage.local.remove("session_expired");
+    await handleSessionExpired();
+    return;
+  }
 
   const { queue = [], pending_review_queue = [] } =
     await chrome.storage.local.get(["queue", "pending_review_queue"]);
@@ -855,14 +919,15 @@ function renderUnifiedCard(card) {
   }
 
   return `
-    <div class="${cardClass}" 
-         data-vin="${v.vin || ""}" 
+    <div class="${cardClass}"
+         data-vin="${v.vin || ""}"
          data-model="${v.model || ""}"
          data-type="${card.type}"
          data-job-id="${card.type === 'job' ? card.item.id : ''}">
       <div class="job-top">
         <div class="job-title">${title || "Unknown Vehicle"}</div>
         <span class="badge ${badgeClass}">${badgeText}</span>
+        <button class="clear-card-btn" title="Remove">×</button>
       </div>
       ${meta ? `<div class="job-meta">${meta}</div>` : ""}
       ${v.price ? `<div class="job-price">${v.price}</div>` : ""}
@@ -888,7 +953,7 @@ function attachCardHandlers(allCards) {
 
       try {
         const v = job.vehicle;
-        const resp = await fetch(`${API_BASE}/listings/generate`, {
+        const resp = await apiFetch(`${API_BASE}/listings/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
           body: JSON.stringify({
@@ -1036,7 +1101,7 @@ document.getElementById("previewScriptBtn")?.addEventListener("click", async () 
     const v = modalVehicle;
     const vehicleInfo = [v.year, v.make, v.model, v.trim].filter(Boolean).join(" ");
 
-    const resp = await fetch(`${API_BASE}/listings/generate-script`, {
+    const resp = await apiFetch(`${API_BASE}/listings/generate-script`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
       body: JSON.stringify({
@@ -1915,7 +1980,7 @@ facebookBtn.addEventListener("click", async () => {
 
     console.log("OrbitAds: Reviewed photos for FB:", reviewedPhotosList.length);
 
-    const resp = await fetch(`${API_BASE}/listings/generate`, {
+    const resp = await apiFetch(`${API_BASE}/listings/generate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -198,14 +198,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "QUEUE_REVIEWED") {
-    addToQueue(message.vehicle, message.video_type || "slideshow", message.theme || "family", message.custom_script || null, message.outro_video_id || null)
-      .then(result => sendResponse({ success: true, queueLength: result }))
+    genQueueAdditions.push({
+      vehicle:     message.vehicle,
+      videoType:   message.video_type   || "slideshow",
+      theme:       message.theme        || "family",
+      customScript: message.custom_script || null,
+      outroVideoId: message.outro_video_id || null,
+    });
+    drainGenQueueAdditions()
+      .then(() => sendResponse({ success: true }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
   if (message.type === "CLASSIFY_PENDING") {
-    classifyInBackground(message.vehicle);
+    classifyInBackground(message.vehicle, message.queue_item_id || null);
     sendResponse({ success: true });
     return true;
   }
@@ -262,9 +269,15 @@ function applyPhotoHints(photos, photoHints) {
   return combined.slice(0, 20);
 }
 
-// ── Global processing lock ─────────────────────────────────
+// ── Global processing locks ────────────────────────────────
 let isEnriching = false;
 const enrichQueue = [];
+
+let isClassifying = false;
+const classifyQueue = [];
+
+let isAddingToGenQueue = false;
+const genQueueAdditions = [];
 
 async function enrichAndQueue(vehicle) {
   enrichQueue.push(vehicle);
@@ -361,6 +374,7 @@ async function enrichSingleVehicle(vehicle) {
     await chrome.storage.local.get("pending_review_queue");
 
   const reviewItem = {
+    queue_item_id: Date.now().toString(),
     vehicle: vehicle,
     photos_all: vehicle.photos || [],
     photos_for_video: vehicle.photos_for_video || (vehicle.photos || []).slice(0, 20),
@@ -389,25 +403,46 @@ async function enrichSingleVehicle(vehicle) {
   chrome.action.setBadgeBackgroundColor({ color: "#1a56db" });
   console.log(`OrbitAds: Added ${vehicle.model} to queue. Total: ${total}`);
 
-  // ── Auto-classify immediately ─────────────────────────
-  console.log(`OrbitAds: Auto-classifying ${vehicle.model}...`);
-  classifyInBackground(vehicle);
+  // ── Queue for sequential classification ──────────────
+  console.log(`OrbitAds: Queuing classification for ${vehicle.model}...`);
+  classifyInBackground(vehicle, reviewItem.queue_item_id);
 
   // Open side panel
   chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id })
     .catch(() => { });
 }
 
-async function classifyInBackground(vehicle) {
-  // Classify up to 30 photos — enough to catch logos mixed in with real photos
-  const hintPhotos = vehicle.photos_for_video || [];
-  const allPhotos = vehicle.photos || [];
+// Push to the sequential classify queue and trigger processing.
+// Never called directly with the actual API logic — that's in classifySingleVehicle.
+function classifyInBackground(vehicle, queueItemId) {
+  classifyQueue.push({ vehicle, queueItemId });
+  processClassifyQueue();
+}
 
-  // Combine hint-selected photos with first few from full list
-  // to catch logos that appear early in the sequence
+// Drain the classify queue one vehicle at a time.
+async function processClassifyQueue() {
+  if (isClassifying) return;
+  isClassifying = true;
+
+  while (classifyQueue.length > 0) {
+    const { vehicle, queueItemId } = classifyQueue.shift();
+    try {
+      await classifySingleVehicle(vehicle, queueItemId);
+    } catch (err) {
+      console.error("OrbitAds: Classification failed for", vehicle.model, err);
+    }
+  }
+
+  isClassifying = false;
+}
+
+async function classifySingleVehicle(vehicle, queueItemId) {
+  const hintPhotos = vehicle.photos_for_video || [];
+  const allPhotos  = vehicle.photos || [];
+
   const photosToClassify = [...new Set([
-    ...allPhotos.slice(0, 5),    // first 5 (often includes logo at JBA)
-    ...hintPhotos,               // hint-selected exterior/interior candidates
+    ...allPhotos.slice(0, 5),
+    ...hintPhotos,
   ])].slice(0, 30);
 
   if (!photosToClassify.length) return;
@@ -430,50 +465,40 @@ async function classifyInBackground(vehicle) {
 
     const classified = await resp.json();
 
-    // First photo of listing is almost always exterior — rescue it
-    const firstPhoto = vehicle.photos[0];
-    const alreadyInExterior = classified.exterior?.includes(firstPhoto);
-
-    if (firstPhoto && !alreadyInExterior) {
-      // Remove from wherever it ended up
-      classified.other = (classified.other || []).filter(u => u !== firstPhoto);
-      classified.interior = (classified.interior || []).filter(u => u !== firstPhoto);
+    // Rescue first photo into exterior if Claude missed it
+    const firstPhoto = allPhotos[0];
+    if (firstPhoto && !classified.exterior?.includes(firstPhoto)) {
+      classified.other     = (classified.other     || []).filter(u => u !== firstPhoto);
+      classified.interior  = (classified.interior  || []).filter(u => u !== firstPhoto);
       classified.additional = (classified.additional || []).filter(u => u !== firstPhoto);
-      // Force into exterior first position
-      classified.exterior = [firstPhoto, ...(classified.exterior || [])];
-      console.log("OrbitAds: Rescued first photo to exterior");
+      classified.exterior  = [firstPhoto, ...(classified.exterior || [])];
     }
 
+    const explicitOther = Array.from(new Set(classified.other || []));
 
-    // Store Claude's explicit "other" classifications separately
-    const explicitOther = new Set(classified.other || []);
-
-    // Save to matching queue item first
+    // Match by queue_item_id (exact), then VIN, then model+year+price
     const { pending_review_queue = [] } =
       await chrome.storage.local.get("pending_review_queue");
 
-    const idx = pending_review_queue.findIndex(item =>
-      (vehicle.vin && item.vehicle?.vin === vehicle.vin) ||
-      item.vehicle?.model === vehicle.model
-    );
+    const idx = pending_review_queue.findIndex(item => {
+      if (queueItemId) return item.queue_item_id === queueItemId;
+      if (vehicle.vin && item.vehicle?.vin) return item.vehicle.vin === vehicle.vin;
+      return item.vehicle?.model === vehicle.model &&
+             item.vehicle?.year  === vehicle.year  &&
+             item.vehicle?.price === vehicle.price;
+    });
 
     if (idx >= 0) {
-      pending_review_queue[idx].classified = classified;
-      pending_review_queue[idx].explicit_other = Array.from(explicitOther);
+      pending_review_queue[idx].classified    = classified;
+      pending_review_queue[idx].explicit_other = explicitOther;
       await chrome.storage.local.set({ pending_review_queue });
-      console.log(`OrbitAds: Classification saved to queue item for ${vehicle.model}`);
+      console.log(`OrbitAds: Classification saved — ${vehicle.model} (id: ${queueItemId})`);
     } else {
-      // Fallback — save to pending_review
-      const { pending_review } = await chrome.storage.local.get("pending_review");
-      if (pending_review) {
-        pending_review.classified = classified;
-        pending_review.explicit_other = Array.from(explicitOther);
-        await chrome.storage.local.set({ pending_review });
-      }
+      console.warn(`OrbitAds: No queue item found for ${vehicle.model} (id: ${queueItemId})`);
     }
 
   } catch (err) {
-    console.error("OrbitAds: Background classification failed:", err);
+    console.error("OrbitAds: classifySingleVehicle failed:", err);
   }
 }
 
@@ -640,6 +665,24 @@ function parseTrimFromTitle(title, year, make, model) {
 
 
 // ── Queue management ──────────────────────────────────────────
+
+// Serialize all addToQueue calls so rapid QUEUE_REVIEWED messages
+// don't race each other and overwrite the same storage slot.
+async function drainGenQueueAdditions() {
+  if (isAddingToGenQueue) return;
+  isAddingToGenQueue = true;
+  while (genQueueAdditions.length > 0) {
+    const { vehicle, videoType, theme, customScript, outroVideoId } =
+      genQueueAdditions.shift();
+    try {
+      await addToQueue(vehicle, videoType, theme, customScript, outroVideoId);
+    } catch (err) {
+      console.error("OrbitAds: addToQueue failed:", err);
+    }
+  }
+  isAddingToGenQueue = false;
+}
+
 async function addToQueue(vehicle, videoType = "slideshow", theme = "family", customScript = null, outroVideoId = null) {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
@@ -679,13 +722,14 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
 }
 
 async function processQueue() {
-  const { queue = [], processing = false } = await chrome.storage.local.get(["queue", "processing"]);
-  if (processing) return;
+  const { queue = [] } = await chrome.storage.local.get("queue");
+
+  // Only one job generating at a time — check queue status, not a storage flag
+  if (queue.some(j => j.status === "generating")) return;
 
   const nextJob = queue.find(j => j.status === "waiting");
   if (!nextJob) return;
 
-  await chrome.storage.local.set({ processing: true });
   nextJob.status = "generating";
   await saveQueue(queue);
 
@@ -693,7 +737,6 @@ async function processQueue() {
 
   try {
     await realProcessing(nextJob, queue);
-    // Explicitly mark as completed if realProcessing didn't
     if (nextJob.status !== "completed") {
       nextJob.status = "completed";
       nextJob.progress = 100;
@@ -705,7 +748,6 @@ async function processQueue() {
   }
 
   await saveQueue(queue);
-  await chrome.storage.local.set({ processing: false });
   processQueue();
 }
 
@@ -739,6 +781,9 @@ async function saveToListingHistory(job, apiJob, token) {
 }
 
 async function realProcessing(job, queue) {
+  // Snapshot vehicle data at start — prevents mutation from concurrent operations
+  const jobSnapshot = JSON.parse(JSON.stringify(job));
+
   const { token } = await chrome.storage.local.get("token");
   console.log("OrbitAds: realProcessing started, token:", !!token);
 
@@ -746,25 +791,25 @@ async function realProcessing(job, queue) {
     throw new Error("Not logged in — please sign in via the extension popup.");
   }
 
-  const v = job.vehicle;
+  const v = jobSnapshot.vehicle;
 
   // ── Submit the job to OrbitAds backend ──────────────────
   const jobPayload = {
     vin: v.vin || null,
     listing_url: v.listing_url || null,
-    theme: job.theme || "family",
-    video_type: job.video_type || "slideshow",
-    outro_video_id: job.outro_video_id || null,
+    theme: jobSnapshot.theme || "family",
+    video_type: jobSnapshot.video_type || "slideshow",
+    outro_video_id: jobSnapshot.outro_video_id || null,
     car_photo_urls: v.photos_for_video?.length
       ? JSON.stringify(v.photos_for_video)
       : null,
-    custom_script: job.custom_script || null,
+    custom_script: jobSnapshot.custom_script || null,
   };
 
   console.log("OrbitAds: Sending job to backend:", {
-    custom_script: job.custom_script?.slice(0, 50),
-    theme: job.theme,
-    video_type: job.video_type,
+    custom_script: jobSnapshot.custom_script?.slice(0, 50),
+    theme: jobSnapshot.theme,
+    video_type: jobSnapshot.video_type,
   });
 
   const createResp = await fetch(`${API_BASE}/jobs/`, {
@@ -834,7 +879,7 @@ async function realProcessing(job, queue) {
       console.log("OrbitAds: token available:", !!token);
       console.log("OrbitAds: final_video_url:", pollData.final_video_url);
 
-      await saveToListingHistory(job, pollData, token);
+      await saveToListingHistory(jobSnapshot, pollData, token);
       return;
     }
 
@@ -1076,8 +1121,15 @@ async function runDailySoldCheck() {
 runDailySoldCheck();
 setInterval(runDailySoldCheck, 6 * 60 * 60 * 1000);
 
-async function saveQueue(queue) {
-  await chrome.storage.local.set({ queue });
+async function saveQueue(localQueue) {
+  // Re-read storage and merge so we never overwrite jobs added by concurrent addToQueue calls.
+  // processQueue holds a stale local array; without this merge it would wipe cars 2, 3, etc.
+  const { queue: stored = [] } = await chrome.storage.local.get("queue");
+  const merged = stored.map(storedJob => {
+    const updated = localQueue.find(j => j.id === storedJob.id);
+    return updated || storedJob;
+  });
+  await chrome.storage.local.set({ queue: merged });
 }
 
 function sleep(ms) {

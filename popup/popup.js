@@ -105,6 +105,7 @@ let modalSelectedType = null;
 let modalSelectedTheme = null;
 let modalVehicle = null;
 let modalSelectedOutroId = null;
+let modalQueueItemId = null;
 
 // ... rest of the file (all functions and event listeners)
 // ... init() call stays at the very bottom
@@ -265,19 +266,22 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   // Generate Ad button
   const generateBtn = e.target.closest(".generate-btn");
   if (generateBtn && !generateBtn.disabled) {
-    const vin = generateBtn.dataset.vin;
-    const model = generateBtn.dataset.model;
+    const vin         = generateBtn.dataset.vin;
+    const model       = generateBtn.dataset.model;
+    const queueItemId = generateBtn.dataset.queueItemId;
 
     const { pending_review_queue = [] } =
       await chrome.storage.local.get("pending_review_queue");
 
     const item = pending_review_queue.find(i =>
-      (vin && i.vehicle?.vin === vin) || i.vehicle?.model === model
+      (queueItemId && i.queue_item_id === queueItemId) ||
+      (vin && i.vehicle?.vin === vin)
     );
 
     if (!item) return;
 
     reviewVehicle = item.vehicle;
+    modalQueueItemId = item.queue_item_id || null;
 
     if (item.classified) {
       reviewPhotos = buildReviewPhotos(
@@ -347,15 +351,18 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   const card = e.target.closest(".job-card");
   if (card && e.target.tagName !== "BUTTON" && e.target.tagName !== "A") {
     const type = card.dataset.type;
-    const vin = card.dataset.vin;
-    const model = card.dataset.model;
-    const jobId = card.dataset.jobId;
+    const vin         = card.dataset.vin;
+    const model       = card.dataset.model;
+    const jobId       = card.dataset.jobId;
+    const queueItemId = card.dataset.queueItemId;
 
     if (type === "review") {
       const { pending_review_queue = [] } =
         await chrome.storage.local.get("pending_review_queue");
+      // Match by queue_item_id first (exact), then VIN, never by model alone
       const item = pending_review_queue.find(i =>
-        (vin && i.vehicle?.vin === vin) || i.vehicle?.model === model
+        (queueItemId && i.queue_item_id === queueItemId) ||
+        (vin && i.vehicle?.vin === vin)
       );
       if (item) {
         reviewVehicle = item.vehicle;
@@ -935,7 +942,7 @@ async function renderQueue() {
 
   // ── Build unified card list ───────────────────────────────
   const allCards = [
-    ...pending_review_queue.map(item => ({
+    ...[...pending_review_queue].reverse().map(item => ({
       type: "review",
       item: item,
       vehicle: item.vehicle,
@@ -995,7 +1002,8 @@ function renderUnifiedCard(card) {
       actionBtn = `<button class="btn-generate generate-btn"
                             data-type="review"
                             data-vin="${v.vin || ""}"
-                            data-model="${v.model || ""}">
+                            data-model="${v.model || ""}"
+                            data-queue-item-id="${card.item.queue_item_id || ""}">
                      Generate Ad →
                    </button>`;
     }
@@ -1043,7 +1051,8 @@ function renderUnifiedCard(card) {
          data-vin="${v.vin || ""}"
          data-model="${v.model || ""}"
          data-type="${card.type}"
-         data-job-id="${card.type === 'job' ? card.item.id : ''}">
+         data-job-id="${card.type === 'job' ? card.item.id : ''}"
+         data-queue-item-id="${card.type === 'review' ? (card.item.queue_item_id || '') : ''}">
       <div class="job-top">
         <div class="job-title">${title || "Unknown Vehicle"}</div>
         <span class="badge ${badgeClass}">${badgeText}</span>
@@ -1125,14 +1134,15 @@ function attachCardHandlers(allCards) {
     card.addEventListener("click", async (e) => {
       if (e.target.tagName === "BUTTON" || e.target.tagName === "A") return;
 
-      const vin = card.dataset.vin;
-      const model = card.dataset.model;
+      const vin         = card.dataset.vin;
+      const queueItemId = card.dataset.queueItemId;
 
       const { pending_review_queue = [] } =
         await chrome.storage.local.get("pending_review_queue");
 
       const item = pending_review_queue.find(i =>
-        (vin && i.vehicle.vin === vin) || i.vehicle.model === model
+        (queueItemId && i.queue_item_id === queueItemId) ||
+        (vin && i.vehicle.vin === vin)
       );
 
       if (item) showReviewScreen(item);
@@ -1146,7 +1156,7 @@ async function showGenerateModal(vehicle) {
     .filter(Boolean).join(" ");
   modalVehicleTitle.textContent = title;
 
-  // Reset to step 1
+  // Reset to step 1 — note: modalQueueItemId is set by the caller before showGenerateModal
   modalSelectedOutroId = null;
   [modalStep1, modalStep2, modalStep3, modalStep4, modalStepOutro]
     .forEach(s => s.style.display = "none");
@@ -1330,55 +1340,50 @@ document.getElementById("confirmGenerateBtn")?.addEventListener("click", () => {
 });
 
 async function generateAdWithOptions(videoType, theme, customScript) {
-  console.log("OrbitAds: reviewPhotos at generate time:", {
-    exterior: reviewPhotos.exterior?.length,
-    interior: reviewPhotos.interior?.length,
-    additional: reviewPhotos.additional?.length,
-    other: reviewPhotos.other?.length,
-  });
-  if (!reviewVehicle) return;
+  // Capture all globals immediately — they can be overwritten if the user
+  // clicks another card before this async function finishes awaiting.
+  const capturedVehicle    = reviewVehicle;
+  const capturedPhotos     = reviewPhotos;
+  const capturedQueueItemId = modalQueueItemId;
+  const capturedOutroId    = modalSelectedOutroId;
+
+  if (!capturedVehicle) return;
 
   const allPhotos = [
-    ...(reviewPhotos.exterior || []),
-    ...(reviewPhotos.interior || []),
-    ...(reviewPhotos.additional || []),
+    ...(capturedPhotos.exterior  || []),
+    ...(capturedPhotos.interior  || []),
+    ...(capturedPhotos.additional || []),
   ];
-
-  console.log("OrbitAds: generating with photos:", {
-    exterior: reviewPhotos.exterior?.length,
-    interior: reviewPhotos.interior?.length,
-    additional: reviewPhotos.additional?.length,
-    total: allPhotos.length,
-  });
 
   if (allPhotos.length === 0) {
     alert("No photos selected. Please click the vehicle card to review photos first.");
     return;
   }
 
-  const vehicle = {
-    ...reviewVehicle,
-    photos_for_video: allPhotos,
-  };
-  console.log("OrbitAds: generating with custom_script:", customScript?.slice(0, 50));
+  const vehicle = { ...capturedVehicle, photos_for_video: allPhotos };
+
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
     video_type: videoType === "photos" ? "slideshow" : videoType,
     theme: theme,
     custom_script: customScript || null,
-    outro_video_id: videoType === "with_outro" ? modalSelectedOutroId : null,
+    outro_video_id: videoType === "with_outro" ? capturedOutroId : null,
     photos_only: videoType === "photos",
   });
 
-  // Remove from pending review queue
+  // Remove this specific car from the pending review queue.
+  // Use queue_item_id (exact) so same-model cars don't remove each other.
   const { pending_review_queue: rawQueue = [] } =
     await chrome.storage.local.get("pending_review_queue");
 
-  const updatedQueue = rawQueue.filter(item => {
-    if (reviewVehicle.vin && item.vehicle.vin) return item.vehicle.vin !== reviewVehicle.vin;
-    return !(item.vehicle.model === reviewVehicle.model && item.vehicle.year === reviewVehicle.year);
-  });
+  const updatedQueue = rawQueue.filter(item =>
+    capturedQueueItemId
+      ? item.queue_item_id !== capturedQueueItemId
+      : capturedVehicle.vin
+        ? item.vehicle?.vin !== capturedVehicle.vin
+        : !(item.vehicle?.model === capturedVehicle.model && item.vehicle?.year === capturedVehicle.year)
+  );
 
   await chrome.storage.local.set({ pending_review_queue: updatedQueue });
   chrome.action.setBadgeText({ text: updatedQueue.length > 0 ? String(updatedQueue.length) : "" });

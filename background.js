@@ -198,7 +198,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "QUEUE_REVIEWED") {
-    addToQueue(message.vehicle, message.video_type || "walkaround", message.theme || "family", message.custom_script || null)
+    addToQueue(message.vehicle, message.video_type || "slideshow", message.theme || "family", message.custom_script || null, message.outro_video_id || null)
       .then(result => sendResponse({ success: true, queueLength: result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -640,7 +640,7 @@ function parseTrimFromTitle(title, year, make, model) {
 
 
 // ── Queue management ──────────────────────────────────────────
-async function addToQueue(vehicle, videoType = "walkaround", theme = "family", customScript = null) {
+async function addToQueue(vehicle, videoType = "slideshow", theme = "family", customScript = null, outroVideoId = null) {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
 
@@ -660,10 +660,11 @@ async function addToQueue(vehicle, videoType = "walkaround", theme = "family", c
   const job = {
     id: Date.now().toString(),
     vehicle: vehicle,
-    video_type: videoType,        // ← store video type
+    video_type: videoType,
+    outro_video_id: outroVideoId,
     status: "waiting",
-    custom_script: customScript || null,  // ← add this
-    theme: theme,        // ← now correctly passed
+    custom_script: customScript || null,
+    theme: theme,
     added_at: new Date().toISOString(),
     progress: 0,
     label: "Waiting...",
@@ -752,11 +753,12 @@ async function realProcessing(job, queue) {
     vin: v.vin || null,
     listing_url: v.listing_url || null,
     theme: job.theme || "family",
-    video_type: job.video_type || "walkaround",
+    video_type: job.video_type || "slideshow",
+    outro_video_id: job.outro_video_id || null,
     car_photo_urls: v.photos_for_video?.length
       ? JSON.stringify(v.photos_for_video)
       : null,
-    custom_script: job.custom_script || null,  // ← add this line
+    custom_script: job.custom_script || null,
   };
 
   console.log("OrbitAds: Sending job to backend:", {
@@ -807,14 +809,13 @@ async function realProcessing(job, queue) {
     const pollData = await pollResp.json();
 
     const statusMap = {
-      "pending": { progress: 5, label: "Starting pipeline..." },
-      "vin_decoding": { progress: 15, label: "Decoding VIN..." },
-      "script_generating": { progress: 35, label: "Writing ad script..." },
-      "voice_cloning": { progress: 55, label: "Cloning voice..." },
-      "avatar_generating": { progress: 75, label: "Generating avatar..." },
-      "assembling": { progress: 88, label: "Assembling video..." },
-      "completed": { progress: 100, label: "Complete!" },
-      "failed": { progress: 0, label: pollData.error_message || "Failed" },
+      "pending":           { progress: 5,   label: "Starting pipeline..." },
+      "vin_decoding":      { progress: 15,  label: "Decoding VIN..." },
+      "script_generating": { progress: 35,  label: "Writing ad script..." },
+      "voice_cloning":     { progress: 55,  label: "Cloning voice..." },
+      "assembling":        { progress: 80,  label: "Assembling video..." },
+      "completed":         { progress: 100, label: "Complete!" },
+      "failed":            { progress: 0,   label: pollData.error_message || "Failed" },
     };
 
     const mapped = statusMap[pollData.status] || { progress: job.progress, label: job.label };

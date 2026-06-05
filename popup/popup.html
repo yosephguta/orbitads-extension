@@ -132,19 +132,32 @@
             <div class="modal-option-desc">Facebook listing with photos — no video</div>
           </div>
         </button>
-        <button class="modal-option" data-type="walkaround">
+        <button class="modal-option" data-type="slideshow">
           <span class="modal-option-icon">🎬</span>
           <div>
             <div class="modal-option-title">Slideshow Video</div>
-            <div class="modal-option-desc">Professional photo slideshow with voiceover</div>
+            <div class="modal-option-desc">Professional photo slideshow with your cloned voiceover</div>
           </div>
         </button>
-        <button class="modal-option" data-type="avatar">
+        <button class="modal-option" data-type="with_outro">
           <span class="modal-option-icon">🎥</span>
           <div>
-            <div class="modal-option-title">Avatar Video (me talking)</div>
-            <div class="modal-option-desc">Video with your face and voice — most engaging</div>
+            <div class="modal-option-title">Slideshow + Your Outro</div>
+            <div class="modal-option-desc">Slideshow video with your recorded outro clip at the end</div>
           </div>
+        </button>
+        <div id="modalVoiceHint" class="modal-voice-hint" style="display:none">
+          🎙️ Add your Voice ID in Settings to unlock video options
+        </div>
+      </div>
+
+      <!-- Step Outro: select outro clip -->
+      <div class="modal-step" id="modalStepOutro" style="display:none">
+        <button class="btn-back-modal" id="backFromOutroStep">← Back</button>
+        <p class="modal-question">Choose your outro clip</p>
+        <div id="outroSelectList"></div>
+        <button class="btn-primary" id="outroConfirmBtn" style="display:none;margin-top:12px">
+          Continue →
         </button>
       </div>
 
@@ -306,14 +319,10 @@
     </div>
 
     <div class="settings-section">
-      <div class="settings-section-title">Voice & Avatar</div>
+      <div class="settings-section-title">Voice</div>
       <div class="form-group">
         <label>My Voice ID <span style="font-weight:400;color:#9ca3af">(ElevenLabs)</span></label>
         <input type="text" id="voiceIdInput" placeholder="Paste your voice ID here">
-      </div>
-      <div class="form-group">
-        <label>My Video Avatar ID <span style="font-weight:400;color:#9ca3af">(HeyGen)</span></label>
-        <input type="text" id="avatarIdInput" placeholder="Paste your avatar ID here">
       </div>
       <div class="form-group">
         <label>Phone Number <span style="font-weight:400;color:#9ca3af">(optional — shown in ads)</span></label>
@@ -321,6 +330,21 @@
       </div>
       <button class="btn-primary" id="saveSettingsBtn">Save</button>
       <div class="settings-saved" id="settingsSaved" style="display:none">✓ Saved</div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Outro Videos</div>
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="outroNameInput" placeholder='e.g. "Casual Friday" or "Formal CTA"'>
+      </div>
+      <div class="form-group">
+        <label>Video file</label>
+        <input type="file" id="outroFileInput" accept="video/*" style="font-size:12px;padding:4px 0">
+      </div>
+      <button class="btn-primary" id="uploadOutroBtn">+ Upload Outro</button>
+      <div id="outroUploadStatus" style="display:none;font-size:12px;margin-top:6px"></div>
+      <div id="outroSettingsList" style="margin-top:14px"></div>
     </div>
 
     <div class="settings-section">

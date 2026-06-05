@@ -69,6 +69,7 @@ const modalStep1 = document.getElementById("modalStep1");
 const modalStep2 = document.getElementById("modalStep2");
 const modalStep3 = document.getElementById("modalStep3");
 const modalStep4 = document.getElementById("modalStep4");
+const modalStepOutro = document.getElementById("modalStepOutro");
 const modalVehicleTitle = document.getElementById("modalVehicleTitle");
 const soldModal = document.getElementById("soldModal");
 const soldCheckerStat = document.getElementById("soldCheckerStat");
@@ -103,6 +104,7 @@ let activeJobPolling = false;
 let modalSelectedType = null;
 let modalSelectedTheme = null;
 let modalVehicle = null;
+let modalSelectedOutroId = null;
 
 // ... rest of the file (all functions and event listeners)
 // ... init() call stays at the very bottom
@@ -421,9 +423,9 @@ async function showSettingsScreen() {
     document.getElementById("settingsEmail").textContent = user.email || "";
     document.getElementById("settingsDealership").textContent = user.dealership_name || "";
     document.getElementById("voiceIdInput").value = user.elevenlabs_voice_id || "";
-    document.getElementById("avatarIdInput").value = user.heygen_avatar_id || "";
   }
   showScreen(settingsScreen);
+  loadOutroSettings();
 }
 
 settingsBtn?.addEventListener("click", showSettingsScreen);
@@ -431,7 +433,6 @@ settingsBtn?.addEventListener("click", showSettingsScreen);
 document.getElementById("saveSettingsBtn")?.addEventListener("click", async () => {
   const { token } = await chrome.storage.local.get("token");
   const voiceId = document.getElementById("voiceIdInput").value.trim();
-  const avatarId = document.getElementById("avatarIdInput").value.trim();
   const phone = document.getElementById("phoneInput")?.value.trim();
 
   const resp = await apiFetch(`${API_BASE}/auth/me`, {
@@ -442,7 +443,6 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
     },
     body: JSON.stringify({
       elevenlabs_voice_id: voiceId || null,
-      heygen_avatar_id: avatarId || null,
       phone_number: phone || null,
     }),
   });
@@ -454,6 +454,126 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
     setTimeout(() => {
       document.getElementById("settingsSaved").style.display = "none";
     }, 2000);
+  }
+});
+
+// ── Outro settings ────────────────────────────────────────────
+async function loadOutroSettings() {
+  const list = document.getElementById("outroSettingsList");
+  if (!list) return;
+  list.innerHTML = `<p style="color:#9ca3af;font-size:12px;text-align:center;padding:8px">Loading...</p>`;
+
+  const { token } = await chrome.storage.local.get("token");
+  try {
+    const resp = await apiFetch(`${API_BASE}/outros/`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error("Failed");
+    const outros = await resp.json();
+
+    if (outros.length === 0) {
+      list.innerHTML = `<p style="color:#9ca3af;font-size:12px;text-align:center;padding:8px">No outro videos yet.</p>`;
+      return;
+    }
+
+    list.innerHTML = outros.map(o => `
+      <div class="outro-saved-item">
+        <span class="outro-saved-name">${o.name}</span>
+        <div class="outro-saved-actions">
+          <a href="${o.url}" target="_blank" class="btn-small">Preview</a>
+          <button class="btn-small outro-delete-btn" data-id="${o.id}"
+                  style="background:#fee2e2;color:#dc2626">Delete</button>
+        </div>
+      </div>`).join("");
+
+  } catch (err) {
+    if (err.message === "session_expired") return;
+    list.innerHTML = `<p style="color:#dc2626;font-size:12px">Failed to load. Please try again.</p>`;
+  }
+}
+
+document.getElementById("uploadOutroBtn")?.addEventListener("click", async () => {
+  const fileInput = document.getElementById("outroFileInput");
+  const nameInput = document.getElementById("outroNameInput");
+  const statusEl  = document.getElementById("outroUploadStatus");
+  const btn       = document.getElementById("uploadOutroBtn");
+
+  const file = fileInput?.files?.[0];
+  const name = nameInput?.value.trim();
+
+  if (!name) {
+    statusEl.style.display = "block";
+    statusEl.style.color = "#dc2626";
+    statusEl.textContent = "Please enter a name for this outro.";
+    return;
+  }
+  if (!file) {
+    statusEl.style.display = "block";
+    statusEl.style.color = "#dc2626";
+    statusEl.textContent = "Please select a video file.";
+    return;
+  }
+
+  btn.textContent = "Uploading...";
+  btn.disabled = true;
+  statusEl.style.display = "none";
+
+  try {
+    const { token } = await chrome.storage.local.get("token");
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("name", name);
+
+    const resp = await apiFetch(`${API_BASE}/outros/upload`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${token}` },
+      body: formData,
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || "Upload failed");
+    }
+
+    fileInput.value = "";
+    nameInput.value = "";
+    statusEl.style.display = "block";
+    statusEl.style.color = "#16a34a";
+    statusEl.textContent = "✓ Uploaded!";
+    setTimeout(() => { statusEl.style.display = "none"; }, 3000);
+    await loadOutroSettings();
+
+  } catch (err) {
+    if (err.message === "session_expired") return;
+    statusEl.style.display = "block";
+    statusEl.style.color = "#dc2626";
+    statusEl.textContent = err.message || "Upload failed. Please try again.";
+  } finally {
+    btn.textContent = "+ Upload Outro";
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("outroSettingsList")?.addEventListener("click", async (e) => {
+  const deleteBtn = e.target.closest(".outro-delete-btn");
+  if (!deleteBtn) return;
+
+  const outroId = deleteBtn.dataset.id;
+  deleteBtn.textContent = "Deleting...";
+  deleteBtn.disabled = true;
+
+  try {
+    const { token } = await chrome.storage.local.get("token");
+    const resp = await apiFetch(`${API_BASE}/outros/${outroId}`, {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok && resp.status !== 204) throw new Error("Delete failed");
+    await loadOutroSettings();
+  } catch (err) {
+    if (err.message === "session_expired") return;
+    deleteBtn.textContent = "Delete";
+    deleteBtn.disabled = false;
   }
 });
 
@@ -1020,17 +1140,31 @@ function attachCardHandlers(allCards) {
   });
 }
 
-function showGenerateModal(vehicle) {
+async function showGenerateModal(vehicle) {
   modalVehicle = vehicle;
   const title = [vehicle.year, vehicle.make?.toUpperCase(), vehicle.model]
     .filter(Boolean).join(" ");
   modalVehicleTitle.textContent = title;
 
   // Reset to step 1
-  [modalStep1, modalStep2, modalStep3, modalStep4]
+  modalSelectedOutroId = null;
+  [modalStep1, modalStep2, modalStep3, modalStep4, modalStepOutro]
     .forEach(s => s.style.display = "none");
   modalStep1.style.display = "block";
   generateModal.style.display = "flex";
+
+  // Disable video options when no voice ID is saved
+  const { user } = await chrome.storage.local.get("user");
+  const hasVoice = !!user?.elevenlabs_voice_id;
+
+  document.querySelectorAll('.modal-option[data-type="slideshow"], .modal-option[data-type="with_outro"]')
+    .forEach(btn => {
+      btn.disabled = !hasVoice;
+      btn.classList.toggle("modal-option-disabled", !hasVoice);
+    });
+
+  const hint = document.getElementById("modalVoiceHint");
+  if (hint) hint.style.display = hasVoice ? "none" : "block";
 }
 
 closeModal?.addEventListener("click", () => {
@@ -1043,11 +1177,14 @@ document.querySelectorAll(".modal-option").forEach(btn => {
     modalSelectedType = btn.dataset.type;
 
     if (modalSelectedType === "photos") {
-      // Photos only — go straight to generate
       generateModal.style.display = "none";
       generateAdWithOptions("photos", "family", null);
+    } else if (modalSelectedType === "with_outro") {
+      modalStep1.style.display = "none";
+      modalStepOutro.style.display = "block";
+      loadOutroStep();
     } else {
-      // Show theme selection
+      // slideshow — go straight to theme selection
       modalStep1.style.display = "none";
       modalStep2.style.display = "block";
     }
@@ -1076,6 +1213,67 @@ document.getElementById("backToStep1")?.addEventListener("click", () => {
   modalStep2.style.display = "none";
   modalStep1.style.display = "block";
 });
+
+document.getElementById("backFromOutroStep")?.addEventListener("click", () => {
+  modalStepOutro.style.display = "none";
+  modalStep1.style.display = "block";
+});
+
+document.getElementById("outroConfirmBtn")?.addEventListener("click", () => {
+  modalStepOutro.style.display = "none";
+  modalStep2.style.display = "block";
+});
+
+async function loadOutroStep() {
+  const list = document.getElementById("outroSelectList");
+  const confirmBtn = document.getElementById("outroConfirmBtn");
+  modalSelectedOutroId = null;
+  confirmBtn.style.display = "none";
+  list.innerHTML = `<p style="color:#6b7280;font-size:13px;text-align:center;padding:12px">Loading...</p>`;
+
+  const { token } = await chrome.storage.local.get("token");
+  try {
+    const resp = await apiFetch(`${API_BASE}/outros/`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error("Failed to load outros");
+    const outros = await resp.json();
+
+    if (outros.length === 0) {
+      list.innerHTML = `
+        <div style="text-align:center;padding:16px">
+          <p style="color:#6b7280;font-size:13px;margin-bottom:10px">
+            No outro videos saved yet.
+          </p>
+          <button class="btn-secondary" id="outroGoToSettings">Add one in Settings →</button>
+        </div>`;
+      document.getElementById("outroGoToSettings")?.addEventListener("click", () => {
+        generateModal.style.display = "none";
+        showSettingsScreen();
+      });
+      return;
+    }
+
+    list.innerHTML = outros.map(o => `
+      <div class="outro-option" data-id="${o.id}">
+        <span class="outro-option-name">${o.name}</span>
+        <span class="outro-check">✓</span>
+      </div>`).join("");
+
+    list.querySelectorAll(".outro-option").forEach(el => {
+      el.addEventListener("click", () => {
+        list.querySelectorAll(".outro-option").forEach(e => e.classList.remove("selected"));
+        el.classList.add("selected");
+        modalSelectedOutroId = parseInt(el.dataset.id);
+        confirmBtn.style.display = "block";
+      });
+    });
+
+  } catch (err) {
+    if (err.message === "session_expired") return;
+    list.innerHTML = `<p style="color:#dc2626;font-size:13px;text-align:center">Failed to load. Please try again.</p>`;
+  }
+}
 
 document.getElementById("backToStep2")?.addEventListener("click", () => {
   modalStep3.style.display = "none";
@@ -1166,9 +1364,10 @@ async function generateAdWithOptions(videoType, theme, customScript) {
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
-    video_type: videoType === "photos" ? "walkaround" : videoType,
+    video_type: videoType === "photos" ? "slideshow" : videoType,
     theme: theme,
     custom_script: customScript || null,
+    outro_video_id: videoType === "with_outro" ? modalSelectedOutroId : null,
     photos_only: videoType === "photos",
   });
 
@@ -1905,7 +2104,7 @@ generateBtn.addEventListener("click", async () => {
     return;
   }
 
-  const videoType = document.getElementById("videoTypeSelect")?.value || "walkaround";
+  const videoType = document.getElementById("videoTypeSelect")?.value || "slideshow";
 
   const vehicle = {
     ...reviewVehicle,

@@ -991,6 +991,18 @@ body {
   margin-top: 8px;
 }
 
+/* Outro saved list in settings */
+.outro-saved-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+.outro-saved-item:last-child { border-bottom: none; }
+.outro-saved-name { font-size: 13px; font-weight: 600; color: #111827; }
+.outro-saved-actions { display: flex; gap: 6px; align-items: center; }
+
 /* ── FB Queue in dashboard ────────────────────────────────── */
 .fb-queue-card {
   background: white;
@@ -1138,6 +1150,43 @@ body {
   font-size: 11px;
   color: #6b7280;
   margin-top: 2px;
+}
+
+/* Outro selection list */
+.outro-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.outro-option:hover { border-color: #1a56db; background: #eff6ff; }
+.outro-option.selected { border-color: #1a56db; background: #eff6ff; }
+.outro-option-name { font-size: 13px; font-weight: 600; color: #111827; }
+.outro-check { color: #1a56db; font-weight: 700; font-size: 14px; display: none; }
+.outro-option.selected .outro-check { display: block; }
+
+/* Disabled modal option (no voice ID) */
+.modal-option-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Voice ID missing hint */
+.modal-voice-hint {
+  font-size: 12px;
+  color: #6b7280;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-align: center;
+  margin-top: 4px;
 }
 
 /* Theme grid */

@@ -115,12 +115,12 @@ soldCheckerStat?.addEventListener("click", async () => {
   const modal = document.getElementById("soldModal");
   if (!modal) return;
   modal.style.display = "flex";
-  
+
   // Attach close handler here so modal exists
   document.getElementById("closeSoldModal").onclick = () => {
     modal.style.display = "none";
   };
-  
+
   await loadSoldModalContent();
 });
 
@@ -266,8 +266,8 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   // Generate Ad button
   const generateBtn = e.target.closest(".generate-btn");
   if (generateBtn && !generateBtn.disabled) {
-    const vin         = generateBtn.dataset.vin;
-    const model       = generateBtn.dataset.model;
+    const vin = generateBtn.dataset.vin;
+    const model = generateBtn.dataset.model;
     const queueItemId = generateBtn.dataset.queueItemId;
 
     const { pending_review_queue = [] } =
@@ -351,9 +351,9 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   const card = e.target.closest(".job-card");
   if (card && e.target.tagName !== "BUTTON" && e.target.tagName !== "A") {
     const type = card.dataset.type;
-    const vin         = card.dataset.vin;
-    const model       = card.dataset.model;
-    const jobId       = card.dataset.jobId;
+    const vin = card.dataset.vin;
+    const model = card.dataset.model;
+    const jobId = card.dataset.jobId;
     const queueItemId = card.dataset.queueItemId;
 
     if (type === "review") {
@@ -502,8 +502,8 @@ async function loadOutroSettings() {
 document.getElementById("uploadOutroBtn")?.addEventListener("click", async () => {
   const fileInput = document.getElementById("outroFileInput");
   const nameInput = document.getElementById("outroNameInput");
-  const statusEl  = document.getElementById("outroUploadStatus");
-  const btn       = document.getElementById("uploadOutroBtn");
+  const statusEl = document.getElementById("outroUploadStatus");
+  const btn = document.getElementById("uploadOutroBtn");
 
   const file = fileInput?.files?.[0];
   const name = nameInput?.value.trim();
@@ -646,30 +646,41 @@ async function init() {
 function showFbListingScreen(listing, vehicle) {
   currentFbListing = { listing, vehicle };
 
-  // Header
-  const title = [vehicle.year, vehicle.make?.toUpperCase(), vehicle.model, vehicle.trim]
-    .filter(Boolean).join(" ");
-  fbListingTitle.textContent = title || "Vehicle Listing";
-  fbListingMeta.textContent = [
-    vehicle.vin ? `VIN: ${vehicle.vin}` : null,
-    vehicle.price,
-    vehicle.mileage,
-  ].filter(Boolean).join(" · ");
-
-  // Fields
-  fbTitleText.textContent = listing.title;
-  fbPriceText.textContent = listing.price?.replace(/[^0-9]/g, "") || "";
-  fbDescText.textContent = listing.description;
-
-  // Tags
-  fbTagsWrap.innerHTML = (listing.tags || [])
-    .map(tag => `<span class="fb-tag">#${tag}</span>`)
-    .join("");
-
-  // Check posting queue status
-  renderFbQueueStatus();
+  // Show a brief loading banner, then populate and clear it
+  const loadingBanner = document.getElementById("fbLoadingBanner");
+  if (loadingBanner) {
+    loadingBanner.style.display = "block";
+    loadingBanner.textContent = "⏳ Preparing your listing...";
+  }
 
   showScreen(fbListingScreen);
+
+  // Populate content on next tick so the loading state is visible briefly
+  setTimeout(() => {
+    const title = [vehicle.year, vehicle.make?.toUpperCase(), vehicle.model, vehicle.trim]
+      .filter(Boolean).join(" ");
+    fbListingTitle.textContent = title || "Vehicle Listing";
+    fbListingMeta.textContent = [
+      vehicle.vin ? `VIN: ${vehicle.vin}` : null,
+      vehicle.price,
+      vehicle.mileage,
+    ].filter(Boolean).join(" · ");
+
+    fbTitleText.textContent = listing.title;
+    fbPriceText.textContent = listing.price?.replace(/[^0-9]/g, "") || "";
+    fbDescText.textContent = listing.description;
+
+    fbTagsWrap.innerHTML = (listing.tags || [])
+      .map(tag => `<span class="fb-tag">#${tag}</span>`)
+      .join("");
+
+    if (loadingBanner) {
+      loadingBanner.textContent = "✓ Listing ready!";
+      setTimeout(() => { loadingBanner.style.display = "none"; }, 1200);
+    }
+
+    renderFbQueueStatus();
+  }, 80);
 }
 
 
@@ -1071,16 +1082,25 @@ function attachCardHandlers(allCards) {
   document.querySelectorAll(".post-fb-from-queue").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      // existing handler code unchanged
+
+      // Immediate feedback — before any awaits
+      const originalText = btn.textContent;
+      btn.textContent = "⏳ Preparing listing...";
+      btn.disabled = true;
+      btn.style.opacity = "0.7";
+
       const jobId = btn.dataset.jobId;
       const { queue = [], token } = await chrome.storage.local.get(["queue", "token"]);
       const job = queue.find(j => j.id === jobId);
-      if (!job) return;
-
-      btn.textContent = "Generating...";
-      btn.disabled = true;
+      if (!job) {
+        btn.textContent = originalText;
+        btn.disabled = false;
+        btn.style.opacity = "1";
+        return;
+      }
 
       try {
+        btn.textContent = "⏳ Generating listing...";
         const v = job.vehicle;
         const resp = await apiFetch(`${API_BASE}/listings/generate`, {
           method: "POST",
@@ -1090,12 +1110,14 @@ function attachCardHandlers(allCards) {
             price: v.price, mileage: v.mileage, vin: v.vin, listing_url: v.listing_url,
           }),
         });
-        if (!resp.ok) throw new Error("Failed");
+        if (!resp.ok) throw new Error("Failed to generate listing");
         const listing = await resp.json();
 
+        btn.textContent = "⏳ Opening Facebook...";
         await chrome.storage.local.set({
           fb_listing: {
-            ...listing, vehicle: v,
+            ...listing,
+            vehicle: v,
             reviewed_photos: v.photos_for_video || [],
             video_url: job.result_url || null,
             created_at: new Date().toISOString(),
@@ -1103,15 +1125,15 @@ function attachCardHandlers(allCards) {
         });
 
         showFbListingScreen(listing, v);
-        // Save to sold vehicle checker immediately
         chrome.runtime.sendMessage({
           type: "MARK_LISTING_POSTED",
           vehicle: v,
           listing_url: v.listing_url,
         });
       } catch (err) {
-        btn.textContent = "📘 Post to FB";
+        btn.textContent = originalText;
         btn.disabled = false;
+        btn.style.opacity = "1";
       }
     });
   });
@@ -1134,7 +1156,7 @@ function attachCardHandlers(allCards) {
     card.addEventListener("click", async (e) => {
       if (e.target.tagName === "BUTTON" || e.target.tagName === "A") return;
 
-      const vin         = card.dataset.vin;
+      const vin = card.dataset.vin;
       const queueItemId = card.dataset.queueItemId;
 
       const { pending_review_queue = [] } =
@@ -1342,16 +1364,16 @@ document.getElementById("confirmGenerateBtn")?.addEventListener("click", () => {
 async function generateAdWithOptions(videoType, theme, customScript) {
   // Capture all globals immediately — they can be overwritten if the user
   // clicks another card before this async function finishes awaiting.
-  const capturedVehicle    = reviewVehicle;
-  const capturedPhotos     = reviewPhotos;
+  const capturedVehicle = reviewVehicle;
+  const capturedPhotos = reviewPhotos;
   const capturedQueueItemId = modalQueueItemId;
-  const capturedOutroId    = modalSelectedOutroId;
+  const capturedOutroId = modalSelectedOutroId;
 
   if (!capturedVehicle) return;
 
   const allPhotos = [
-    ...(capturedPhotos.exterior  || []),
-    ...(capturedPhotos.interior  || []),
+    ...(capturedPhotos.exterior || []),
+    ...(capturedPhotos.interior || []),
     ...(capturedPhotos.additional || []),
   ];
 

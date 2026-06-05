@@ -1076,10 +1076,6 @@ async function runDailySoldCheck() {
 runDailySoldCheck();
 setInterval(runDailySoldCheck, 6 * 60 * 60 * 1000);
 
-// Run sold check on extension startup and every 6 hours
-runDailySoldCheck();
-setInterval(runDailySoldCheck, 6 * 60 * 60 * 1000);
-
 async function saveQueue(queue) {
   await chrome.storage.local.set({ queue });
 }

@@ -118,7 +118,10 @@ const DEALERSHIP_CONFIGS = {
   },
 };
 
-const API_BASE = "https://api.dealersorbit.com/api/v1";
+const IS_DEV = !("update_url" in chrome.runtime.getManifest());
+const API_BASE = IS_DEV
+  ? "http://localhost:8000/api/v1"
+  : "https://api.dealersorbit.com/api/v1";
 
 async function handleExpiredToken() {
   await chrome.storage.local.remove(["token", "user"]);
@@ -700,24 +703,27 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
     }
   }
 
+  // Photos-only: no video pipeline needed — mark complete immediately
+  const photosOnly = videoType === "photos";
+
   const job = {
     id: Date.now().toString(),
     vehicle: vehicle,
     video_type: videoType,
     outro_video_id: outroVideoId,
-    status: "waiting",
+    status: photosOnly ? "completed" : "waiting",
     custom_script: customScript || null,
     theme: theme,
     added_at: new Date().toISOString(),
-    progress: 0,
-    label: "Waiting...",
+    progress: photosOnly ? 100 : 0,
+    label: photosOnly ? "Photos ready — Post to FB" : "Waiting...",
     error: null,
     result_url: null,
   };
 
   queue.push(job);
   await chrome.storage.local.set({ queue });
-  processQueue();
+  if (!photosOnly) processQueue();
   return queue.length;
 }
 

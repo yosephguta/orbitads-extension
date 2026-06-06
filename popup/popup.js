@@ -13,7 +13,12 @@
 // ── Config ────────────────────────────────────────────────────
 // Change to https://api.dealersorbit.com when deployed
 // ── Config ────────────────────────────────────────────────────
-const API_BASE = "https://api.dealersorbit.com/api/v1";
+// Automatically use localhost when loaded as an unpacked (dev) extension.
+// Published Chrome Web Store builds always have update_url in the manifest.
+const IS_DEV = !("update_url" in chrome.runtime.getManifest());
+const API_BASE = IS_DEV
+  ? "http://localhost:8000/api/v1"
+  : "https://api.dealersorbit.com/api/v1";
 
 // ── Elements ──────────────────────────────────────────────────
 const dashboardScreen = document.getElementById("dashboardScreen");
@@ -98,6 +103,7 @@ async function apiFetch(url, options = {}) {
 // ── State ──────────────────────────────────────────────────────
 let currentFbListing = null;
 let queueInterval = null;
+const fbGeneratingJobs = new Set(); // job IDs currently being processed for FB listing
 let reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
 let reviewVehicle = null;
 let activeJobPolling = false;
@@ -307,8 +313,54 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
 
   // Post to FB button
   const postFbBtn = e.target.closest(".post-fb-from-queue");
-  if (postFbBtn) {
-    postFbBtn.dispatchEvent(new CustomEvent("post-fb-click", { bubbles: false }));
+  if (postFbBtn && !postFbBtn.disabled) {
+    const jobId = postFbBtn.dataset.jobId;
+    if (fbGeneratingJobs.has(jobId)) return;
+
+    fbGeneratingJobs.add(jobId);
+    renderQueue(); // re-render immediately to show loading state
+
+    (async () => {
+      try {
+        const { queue = [], token } = await chrome.storage.local.get(["queue", "token"]);
+        const job = queue.find(j => j.id === jobId);
+        if (!job) return;
+
+        const v = job.vehicle;
+        const resp = await apiFetch(`${API_BASE}/listings/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({
+            year: v.year, make: v.make, model: v.model, trim: v.trim,
+            price: v.price, mileage: v.mileage, vin: v.vin, listing_url: v.listing_url,
+          }),
+        });
+        if (!resp.ok) throw new Error("Failed to generate listing");
+        const listing = await resp.json();
+
+        await chrome.storage.local.set({
+          fb_listing: {
+            ...listing,
+            vehicle: v,
+            reviewed_photos: v.photos_for_video || [],
+            video_url: job.result_url || null,
+            created_at: new Date().toISOString(),
+          }
+        });
+
+        showFbListingScreen(listing, v);
+        chrome.runtime.sendMessage({
+          type: "MARK_LISTING_POSTED",
+          vehicle: v,
+          listing_url: v.listing_url,
+        });
+      } catch (err) {
+        if (err.message !== "session_expired") console.error("OrbitAds: Post to FB failed:", err);
+      } finally {
+        fbGeneratingJobs.delete(jobId);
+        renderQueue();
+      }
+    })();
     return;
   }
 
@@ -1036,13 +1088,17 @@ function renderUnifiedCard(card) {
       progressBar = `<div class="progress-wrap">
                        <div class="progress-bar done" style="width:100%"></div>
                      </div>`;
+      const fbLoading = fbGeneratingJobs.has(job.id);
       actionBtn = `<div class="job-actions">
                      ${job.result_url
           ? `<a href="${job.result_url}" target="_blank" class="btn-small">▶ View Ad</a>`
           : ""}
                      <button class="btn-small post-fb-from-queue"
                              data-job-id="${job.id}"
-                             style="background:#1877f2">📘 Post to FB</button>
+                             style="background:#1877f2;opacity:${fbLoading ? '0.7' : '1'}"
+                             ${fbLoading ? 'disabled' : ''}>
+                       ${fbLoading ? '⏳ Generating listing...' : '📘 Post to FB'}
+                     </button>
                    </div>`;
     } else if (job.status === "failed") {
       badgeClass = "badge-failed";
@@ -1078,65 +1134,8 @@ function renderUnifiedCard(card) {
 
 function attachCardHandlers(allCards) {
 
-  // Post to FB from completed job
-  document.querySelectorAll(".post-fb-from-queue").forEach(btn => {
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-
-      // Immediate feedback — before any awaits
-      const originalText = btn.textContent;
-      btn.textContent = "⏳ Preparing listing...";
-      btn.disabled = true;
-      btn.style.opacity = "0.7";
-
-      const jobId = btn.dataset.jobId;
-      const { queue = [], token } = await chrome.storage.local.get(["queue", "token"]);
-      const job = queue.find(j => j.id === jobId);
-      if (!job) {
-        btn.textContent = originalText;
-        btn.disabled = false;
-        btn.style.opacity = "1";
-        return;
-      }
-
-      try {
-        btn.textContent = "⏳ Generating listing...";
-        const v = job.vehicle;
-        const resp = await apiFetch(`${API_BASE}/listings/generate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-          body: JSON.stringify({
-            year: v.year, make: v.make, model: v.model, trim: v.trim,
-            price: v.price, mileage: v.mileage, vin: v.vin, listing_url: v.listing_url,
-          }),
-        });
-        if (!resp.ok) throw new Error("Failed to generate listing");
-        const listing = await resp.json();
-
-        btn.textContent = "⏳ Opening Facebook...";
-        await chrome.storage.local.set({
-          fb_listing: {
-            ...listing,
-            vehicle: v,
-            reviewed_photos: v.photos_for_video || [],
-            video_url: job.result_url || null,
-            created_at: new Date().toISOString(),
-          }
-        });
-
-        showFbListingScreen(listing, v);
-        chrome.runtime.sendMessage({
-          type: "MARK_LISTING_POSTED",
-          vehicle: v,
-          listing_url: v.listing_url,
-        });
-      } catch (err) {
-        btn.textContent = originalText;
-        btn.disabled = false;
-        btn.style.opacity = "1";
-      }
-    });
-  });
+  // Post to FB is handled by the delegated #jobList click handler using fbGeneratingJobs set.
+  // No per-button listener needed here — renderUnifiedCard checks fbGeneratingJobs on each render.
 
   // Remove failed job
   document.querySelectorAll(".remove-failed-btn").forEach(btn => {
@@ -1387,7 +1386,7 @@ async function generateAdWithOptions(videoType, theme, customScript) {
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
     vehicle: vehicle,
-    video_type: videoType === "photos" ? "slideshow" : videoType,
+    video_type: videoType,
     theme: theme,
     custom_script: customScript || null,
     outro_video_id: videoType === "with_outro" ? capturedOutroId : null,

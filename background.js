@@ -352,6 +352,13 @@ async function enrichSingleVehicle(vehicle) {
               detailData.title, vehicle.year, vehicle.make, vehicle.model
             );
           }
+
+          vehicle.exterior_color = detailData.exterior_color || null;
+          vehicle.interior_color = detailData.interior_color || null;
+          // JBA body style is more specific than NHTSA — prefer it
+          vehicle.body_style = detailData.body_style || vehicle.body_style || null;
+          console.log(`OrbitAds: Colors — exterior: ${vehicle.exterior_color}, interior: ${vehicle.interior_color}`);
+          console.log(`OrbitAds: Body style — ${vehicle.body_style}`);
         }
       }
 
@@ -608,7 +615,32 @@ function extractDetailPageData() {
   const mileage = mileageEls
     .find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
 
-  return { vin, title: titleText, photos, price, mileage };
+  // ── Spec table (JBA dl-horizontal): colors + body style ─────
+  let exteriorColor = null;
+  let interiorColor = null;
+  let bodyStyle     = null;
+  let currentLabel  = null;
+
+  document.querySelectorAll('dl.dl-horizontal dt, dl.dl-horizontal dd').forEach(el => {
+    if (el.tagName === 'DT') {
+      currentLabel = el.textContent.trim().toLowerCase();
+    } else if (el.tagName === 'DD') {
+      if (currentLabel?.includes('exterior color')) {
+        exteriorColor = el.querySelector('span:last-child')?.textContent.trim() ||
+                        el.textContent.trim() || null;
+      } else if (currentLabel?.includes('interior color')) {
+        interiorColor = el.querySelector('span:last-child')?.textContent.trim() ||
+                        el.textContent.trim() || null;
+      } else if (currentLabel?.includes('body')) {
+        // e.g. "Coupe/4 seats" → "Coupe"
+        const fullText = el.querySelector('span')?.textContent.trim() ||
+                         el.textContent.trim() || '';
+        bodyStyle = fullText.split('/')[0].trim() || null;
+      }
+    }
+  });
+
+  return { vin, title: titleText, photos, price, mileage, exterior_color: exteriorColor, interior_color: interiorColor, body_style: bodyStyle };
 }
 
 function waitForTabLoad(tabId) {

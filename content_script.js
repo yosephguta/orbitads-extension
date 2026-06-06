@@ -811,7 +811,12 @@ async function tryFacebookAutoFill() {
 
   // ── Step 8: Body style ────────────────────────────────────
   await sleep(1000);
-  await fillDropdown("Body style", guessBodyStyle(v.model || ""));
+  // Prefer extracted body_style from JBA spec table; fall back to model-name guess
+  const bodyStyle = mapToFacebookBodyStyle(
+    fb_listing.vehicle?.body_style || fb_listing.vehicle?.vehicle_type
+  ) || mapToFacebookBodyStyle(guessBodyStyle(v.model || ""));
+  console.log(`OrbitAds: body style: ${fb_listing.vehicle?.body_style} → ${bodyStyle}`);
+  await fillDropdown("Body style", bodyStyle || "Other");
   await sleep(1000);
 
   // ── Step 9: Vehicle condition ─────────────────────────────
@@ -822,7 +827,23 @@ async function tryFacebookAutoFill() {
   await fillDropdown("Fuel type", guessFuelType(v.make || "", v.model || ""));
   await sleep(1000);
 
-  // ── Step 11: Clean title checkbox ────────────────────────
+  // ── Step 11: Exterior and Interior color ─────────────────
+  const exteriorFbColor = mapToFacebookColor(fb_listing.vehicle?.exterior_color);
+  const interiorFbColor = mapToFacebookColor(fb_listing.vehicle?.interior_color);
+
+  console.log(`OrbitAds: exterior color: ${fb_listing.vehicle?.exterior_color} → ${exteriorFbColor}`);
+  console.log(`OrbitAds: interior color: ${fb_listing.vehicle?.interior_color} → ${interiorFbColor}`);
+
+  if (exteriorFbColor) {
+    await fillDropdown("Exterior color", exteriorFbColor);
+    await sleep(500);
+  }
+  if (interiorFbColor) {
+    await fillDropdown("Interior color", interiorFbColor);
+    await sleep(500);
+  }
+
+  // ── Step 12: Clean title checkbox ────────────────────────
   const cleanTitleCheckbox = document.querySelector(
     'input[type="checkbox"][name="title_status"], ' +
     'input[aria-label="This vehicle has a clean title."]'
@@ -1014,6 +1035,75 @@ async function uploadVideoToFacebook(fbListing) {
   } catch (err) {
     console.error("OrbitAds: Video upload failed:", err);
   }
+}
+
+function mapToFacebookColor(colorStr) {
+  if (!colorStr) return null;
+  const c = colorStr.toLowerCase();
+
+  const colorMap = [
+    { fb: 'Black',     keywords: ['black', 'noir', 'ebony', 'onyx', 'midnight', 'carbon', 'phantom', 'jet'] },
+    { fb: 'White',     keywords: ['white', 'pearl', 'ivory', 'cream', 'snow', 'frost', 'glacier', 'alpine', 'bright'] },
+    { fb: 'Silver',    keywords: ['silver', 'metallic', 'chrome', 'platinum', 'sterling', 'aluminum', 'florett', 'lunar', 'stardust', 'blade', 'sonic'] },
+    { fb: 'Gray',      keywords: ['gray', 'grey', 'graphite', 'slate', 'granite', 'storm', 'shadow', 'smoke', 'pewter', 'tungsten', 'machine'] },
+    { fb: 'Charcoal',  keywords: ['charcoal', 'dark gray', 'dark grey', 'iron', 'magnetite', 'mineral'] },
+    { fb: 'Blue',      keywords: ['blue', 'navy', 'sapphire', 'cobalt', 'azure', 'aqua', 'ocean', 'sky', 'aegean', 'portofino', 'atlantic', 'pacific', 'velocity', 'kinetic'] },
+    { fb: 'Red',       keywords: ['red', 'crimson', 'scarlet', 'cherry', 'ruby', 'garnet', 'cardinal', 'flame', 'rally', 'radiant'] },
+    { fb: 'Burgundy',  keywords: ['burgundy', 'maroon', 'wine', 'merlot', 'dark red', 'oxblood', 'sangria'] },
+    { fb: 'Green',     keywords: ['green', 'forest', 'sage', 'olive', 'emerald', 'lime', 'hunter', 'jungle', 'army'] },
+    { fb: 'Brown',     keywords: ['brown', 'bronze', 'copper', 'mocha', 'espresso', 'chestnut', 'walnut', 'cognac', 'terra'] },
+    { fb: 'Tan',       keywords: ['tan', 'sand', 'desert', 'wheat', 'khaki', 'camel', 'parchment'] },
+    { fb: 'Beige',     keywords: ['beige', 'champagne', 'vanilla', 'linen', 'cashmere', 'almond'] },
+    { fb: 'Gold',      keywords: ['gold', 'golden', 'amber', 'harvest', 'canyon', 'metallic gold'] },
+    { fb: 'Orange',    keywords: ['orange', 'tangerine', 'burnt', 'terra cotta', 'cayenne'] },
+    { fb: 'Yellow',    keywords: ['yellow', 'lemon', 'solar', 'sunburst', 'canary', 'lightning'] },
+    { fb: 'Purple',    keywords: ['purple', 'violet', 'plum', 'lavender', 'amethyst', 'grape'] },
+    { fb: 'Pink',      keywords: ['pink', 'rose', 'blush', 'fuchsia', 'coral', 'salmon'] },
+    { fb: 'Turquoise', keywords: ['turquoise', 'teal', 'cyan', 'seafoam', 'mint', 'caribbean'] },
+    { fb: 'Off White', keywords: ['off white', 'off-white', 'eggshell', 'antique white'] },
+  ];
+
+  for (const mapping of colorMap) {
+    for (const keyword of mapping.keywords) {
+      if (c.includes(keyword)) return mapping.fb;
+    }
+  }
+
+  // Fallback — try matching individual words
+  const words = c.split(/[\s\-_]+/);
+  for (const word of words) {
+    for (const mapping of colorMap) {
+      if (mapping.fb.toLowerCase() === word) return mapping.fb;
+      if (mapping.keywords.includes(word)) return mapping.fb;
+    }
+  }
+
+  return null;
+}
+
+function mapToFacebookBodyStyle(bodyStr) {
+  if (!bodyStr) return null;
+  const b = bodyStr.toLowerCase().trim();
+
+  const bodyMap = [
+    { fb: 'Coupe',       keywords: ['coupe', 'coup'] },
+    { fb: 'Sedan',       keywords: ['sedan', 'saloon'] },
+    { fb: 'Hatchback',   keywords: ['hatchback', 'hatch', '5-door', '3-door'] },
+    { fb: 'SUV',         keywords: ['suv', 'sport utility', 'crossover', 'cuv'] },
+    { fb: 'Truck',       keywords: ['truck', 'pickup', 'pick-up', 'pick up'] },
+    { fb: 'Convertible', keywords: ['convertible', 'cabriolet', 'roadster', 'spyder', 'spider'] },
+    { fb: 'Wagon',       keywords: ['wagon', 'estate', 'touring', 'sportwagon', 'sport wagon'] },
+    { fb: 'Minivan',     keywords: ['minivan', 'mini van', 'van', 'minibus'] },
+    { fb: 'Small Car',   keywords: ['small car', 'micro', 'mini', 'city car', 'subcompact'] },
+  ];
+
+  for (const mapping of bodyMap) {
+    for (const keyword of mapping.keywords) {
+      if (b.includes(keyword)) return mapping.fb;
+    }
+  }
+
+  return 'Other';
 }
 
 function guessBodyStyle(model) {

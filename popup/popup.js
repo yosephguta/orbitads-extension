@@ -311,8 +311,8 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     return;
   }
 
-  // Post to FB button
-  const postFbBtn = e.target.closest(".post-fb-from-queue");
+  // Post to Marketplace button
+  const postFbBtn = e.target.closest(".post-marketplace-btn");
   if (postFbBtn && !postFbBtn.disabled) {
     const jobId = postFbBtn.dataset.jobId;
     if (fbGeneratingJobs.has(jobId)) return;
@@ -361,6 +361,45 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
         renderQueue();
       }
     })();
+    return;
+  }
+
+  // FB Post button
+  const fbPostBtn = e.target.closest(".post-fb-post-btn");
+  if (fbPostBtn) {
+    const jobId = fbPostBtn.dataset.jobId;
+    const { queue = [] } = await chrome.storage.local.get("queue");
+    const job = queue.find(j => j.id === jobId);
+    if (!job) return;
+
+    const v = job.vehicle || {};
+
+    let exteriorPhotos, interiorPhotos;
+    if (v.photos_exterior?.length > 0) {
+      // Job generated after the classified-photos fix — exact breakdown available
+      exteriorPhotos = v.photos_exterior.slice(0, 4);
+      interiorPhotos = (v.photos_interior || []).slice(0, 2);
+    } else {
+      // Older job — photos_for_video is ordered [exterior..., interior..., additional...]
+      const allPhotos = Array.isArray(v.photos_for_video)
+        ? v.photos_for_video
+        : (() => { try { return JSON.parse(v.photos_for_video || '[]'); } catch { return []; } })();
+      exteriorPhotos = allPhotos.slice(0, 4);
+      interiorPhotos = allPhotos.slice(4, 6);
+    }
+
+    await chrome.storage.local.set({
+      fb_post: {
+        caption: buildFbPostCaption(v),
+        exterior_photos: exteriorPhotos,
+        interior_photos: interiorPhotos,
+        video_url: job.result_url || null,
+        job_id: jobId,
+        created_at: new Date().toISOString(),
+      }
+    });
+
+    chrome.tabs.create({ url: "https://www.facebook.com/?orbitads_post=1" });
     return;
   }
 
@@ -904,7 +943,6 @@ async function loadRecentAds() {
   if (statAdsWeek) statAdsWeek.textContent =
     completed.filter(j => new Date(j.added_at).getTime() > weekAgo).length;
   if (statAdsTotal) statAdsTotal.textContent = completed.length;
-  updateSoldStat(listings);
 }
 
 function renderListings(listings) {
@@ -1093,12 +1131,15 @@ function renderUnifiedCard(card) {
                      ${job.result_url
           ? `<a href="${job.result_url}" target="_blank" class="btn-small">▶ View Ad</a>`
           : ""}
-                     <button class="btn-small post-fb-from-queue"
+                     <button class="btn-small post-marketplace-btn"
                              data-job-id="${job.id}"
                              style="background:#1877f2;opacity:${fbLoading ? '0.7' : '1'}"
                              ${fbLoading ? 'disabled' : ''}>
-                       ${fbLoading ? '⏳ Generating listing...' : '📘 Post to FB'}
+                       ${fbLoading ? '⏳ Generating listing...' : '🏪 Marketplace'}
                      </button>
+                     <button class='btn-small post-fb-post-btn'
+                             data-job-id='${job.id}'
+                             style='background:#4267B2;font-size:11px'>📘 FB Post</button>
                    </div>`;
     } else if (job.status === "failed") {
       badgeClass = "badge-failed";
@@ -1130,6 +1171,17 @@ function renderUnifiedCard(card) {
       ${progressBar}
       ${actionBtn}
     </div>`;
+}
+
+function buildFbPostCaption(v) {
+  const year = v.year || "";
+  const make = v.make || "";
+  const model = v.model || "";
+  const trim = v.trim ? ` ${v.trim}` : "";
+  const price = v.price ? `\n💰 ${v.price}` : "";
+  const mileage = v.mileage ? `\n📍 ${v.mileage} miles` : "";
+  const vin = v.vin ? `\nVIN: ${v.vin}` : "";
+  return `🚗 ${year} ${make} ${model}${trim}${price}${mileage}${vin}\n\nContact us today to learn more!`;
 }
 
 function attachCardHandlers(allCards) {
@@ -1381,7 +1433,12 @@ async function generateAdWithOptions(videoType, theme, customScript) {
     return;
   }
 
-  const vehicle = { ...capturedVehicle, photos_for_video: allPhotos };
+  const vehicle = {
+    ...capturedVehicle,
+    photos_for_video: allPhotos,
+    photos_exterior: capturedPhotos.exterior || [],
+    photos_interior: capturedPhotos.interior || [],
+  };
 
   await chrome.runtime.sendMessage({
     type: "QUEUE_REVIEWED",
@@ -2135,6 +2192,8 @@ generateBtn.addEventListener("click", async () => {
   const vehicle = {
     ...reviewVehicle,
     photos_for_video: allPhotos,
+    photos_exterior: reviewPhotos.exterior || [],
+    photos_interior: reviewPhotos.interior || [],
   };
 
   const theme = document.getElementById("themeSelect")?.value ||

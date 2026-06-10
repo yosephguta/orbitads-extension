@@ -669,6 +669,288 @@ function toTitleCase(str) {
   );
 }
 
+async function ensurePublicPrivacy() {
+  // Open privacy picker
+  const privacyBtn = document.querySelector('[aria-label*="Edit privacy"]');
+  if (!privacyBtn) {
+    console.log("OrbitAds: privacy button not found, skipping");
+    return;
+  }
+  privacyBtn.click();
+  await new Promise(r => setTimeout(r, 1200));
+
+  // Select Public radio
+  const publicRadio = document.querySelector('input[type="radio"][name="-0"]');
+  if (publicRadio && !publicRadio.checked) {
+    publicRadio.click();
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  // Click Done button
+  const doneBtn = Array.from(document.querySelectorAll('span')).find(
+    s => s.textContent.trim() === 'Done'
+  );
+  if (doneBtn) {
+    doneBtn.closest('[role="button"]')?.click() || doneBtn.click();
+    await new Promise(r => setTimeout(r, 800));
+    console.log("OrbitAds: privacy set to Public");
+  } else {
+    // fallback: Back button
+    const backBtn = document.querySelector('[aria-label="Back"]');
+    backBtn?.click();
+    await new Promise(r => setTimeout(r, 800));
+  }
+}
+
+async function openPostComposer() {
+  // Step 1: click the "What's on your mind?" area to open the full composer
+  const createPostBtn = Array.from(document.querySelectorAll('[role="button"]')).find(
+    el => /what.s on your mind/i.test(el.textContent)
+  );
+  if (!createPostBtn) throw new Error("OrbitAds: 'What’s on your mind' button not found");
+  createPostBtn.click();
+  await new Promise(r => setTimeout(r, 1200));
+
+  // Step 2: wait for the full composer dialog (contenteditable) to appear
+  await new Promise((resolve, reject) => {
+    const deadline = Date.now() + 8000;
+    const check = setInterval(() => {
+      if (document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]')) {
+        clearInterval(check);
+        resolve();
+      } else if (Date.now() > deadline) {
+        clearInterval(check);
+        reject(new Error("OrbitAds: composer did not open"));
+      }
+    }, 300);
+  });
+  await new Promise(r => setTimeout(r, 500));
+  console.log("OrbitAds: composer opened");
+}
+
+async function addCaptionToPost(caption) {
+  // After photo attachment Facebook transitions to photo-post mode — a new dialog
+  // layer replaces the text composer. Scope the search to the active dialog so we
+  // don't accidentally write into the home-feed "What's on your mind?" box behind it.
+  const dialog =
+    document.querySelector('[role="dialog"]') ||
+    document.querySelector('[aria-modal="true"]');
+
+  const editor =
+    dialog?.querySelector('div[contenteditable="true"][data-lexical-editor="true"]') ||
+    document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
+
+  if (!editor) throw new Error("OrbitAds: caption editor not found");
+  editor.focus();
+  await new Promise(r => setTimeout(r, 300));
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  document.execCommand('insertText', false, caption);
+  await new Promise(r => setTimeout(r, 400));
+  console.log("OrbitAds: caption inserted");
+}
+
+async function uploadFilesToPost(exteriorPhotos, interiorPhotos, videoUrl) {
+  const photoUrls = [
+    ...(exteriorPhotos || []).slice(0, 4),
+    ...(interiorPhotos || []).slice(0, 2),
+  ];
+
+  if (photoUrls.length === 0 && !videoUrl) {
+    console.log("OrbitAds: no files to upload, skipping");
+    return;
+  }
+
+  // Use the home-feed file input (the Photo/video shortcut button's hidden input).
+  // Setting files on it causes Facebook to open the photo post composer directly —
+  // no need to open a text composer first, which avoids the two-dialog split.
+  const fileInput =
+    document.querySelector('input[type="file"][multiple]') ||
+    document.querySelector('input[type="file"]');
+
+  if (!fileInput) throw new Error("OrbitAds: file input not found on page");
+
+  console.log("OrbitAds: file input accept:", fileInput.accept);
+  const acceptsVideo = /video/i.test(fileInput.accept);
+
+  const dt = new DataTransfer();
+
+  // ── Photos ─────────────────────────────────────────────────────
+  for (let i = 0; i < photoUrls.length; i++) {
+    try {
+      const resp = await fetch(photoUrls[i]);
+      if (!resp.ok) { console.warn(`OrbitAds: photo ${i + 1} HTTP ${resp.status}`); continue; }
+      const blob = await resp.blob();
+      console.log(`OrbitAds: photo ${i + 1}: ${(blob.size / 1024).toFixed(0)}KB`);
+      const ext = photoUrls[i].split('?')[0].split('.').pop().toLowerCase() || 'jpg';
+      dt.items.add(new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' }));
+    } catch (e) {
+      console.warn(`OrbitAds: photo ${i + 1} error:`, e.message);
+    }
+  }
+
+  // ── Video ──────────────────────────────────────────────────────
+  if (videoUrl && acceptsVideo) {
+    try {
+      const resp = await fetch(videoUrl);
+      if (resp.ok) {
+        const blob = await resp.blob();
+        console.log('OrbitAds: video size:', (blob.size / 1024 / 1024).toFixed(1), 'MB');
+        dt.items.add(new File([blob], 'vehicle-ad.mp4', { type: 'video/mp4' }));
+      } else {
+        console.log('OrbitAds: video download failed:', resp.status);
+      }
+    } catch (err) {
+      console.log('OrbitAds: video fetch error:', err.message);
+    }
+  } else if (videoUrl) {
+    console.log('OrbitAds: file input photos-only — skipping video');
+  }
+
+  if (dt.files.length === 0) {
+    console.log("OrbitAds: no files to attach");
+    return;
+  }
+
+  // Setting files opens Facebook's photo post composer automatically
+  fileInput.files = dt.files;
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+  console.log(`OrbitAds: attached ${dt.files.length} files`);
+
+  // Wait for a contenteditable (caption box) to appear in the photo composer.
+  // Facebook's photo composer doesn't consistently use role="dialog" so we
+  // watch for any Lexical editor appearing on the page.
+  await new Promise((resolve) => {
+    const deadline = Date.now() + 12000;
+    const check = setInterval(() => {
+      const editor = document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
+      if (editor || Date.now() > deadline) { clearInterval(check); resolve(); }
+    }, 300);
+  });
+  await sleep(1000);
+  console.log("OrbitAds: photo composer ready");
+}
+
+function showOrbitAdsBanner(message) {
+  document.querySelector(".orbitads-post-banner")?.remove();
+
+  const banner = document.createElement("div");
+  banner.className = "orbitads-post-banner";
+  banner.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #4267B2;
+    color: white;
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-family: -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 999999;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    min-width: 260px;
+    max-width: 320px;
+    line-height: 1.5;
+  `;
+  banner.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="font-size:18px">📘</span>
+      <strong>OrbitAds FB Post</strong>
+    </div>
+    <div class="orbitads-banner-msg" style="font-weight:400;font-size:13px">${message}</div>
+  `;
+  document.body.appendChild(banner);
+  return banner;
+}
+
+function updateBanner(message, type = 'working') {
+  const banner = document.querySelector(".orbitads-post-banner");
+  if (!banner) return;
+
+  const msgEl = banner.querySelector(".orbitads-banner-msg");
+  if (msgEl) msgEl.textContent = message;
+
+  if (type === 'success') {
+    banner.style.background = '#16a34a';
+    if (!banner.querySelector('#orbitads-post-dismiss')) {
+      const btn = document.createElement('button');
+      btn.id = 'orbitads-post-dismiss';
+      btn.textContent = 'Dismiss';
+      btn.style.cssText = `
+        margin-top:8px;background:transparent;color:white;
+        border:1px solid rgba(255,255,255,0.5);padding:4px 10px;
+        border-radius:4px;cursor:pointer;font-size:12px;display:block
+      `;
+      btn.onclick = () => banner.remove();
+      banner.appendChild(btn);
+    }
+    setTimeout(() => banner.remove(), 10000);
+  } else if (type === 'error') {
+    banner.style.background = '#dc2626';
+    if (!banner.querySelector('#orbitads-post-dismiss')) {
+      const btn = document.createElement('button');
+      btn.id = 'orbitads-post-dismiss';
+      btn.textContent = 'Dismiss';
+      btn.style.cssText = `
+        margin-top:8px;background:transparent;color:white;
+        border:1px solid rgba(255,255,255,0.5);padding:4px 10px;
+        border-radius:4px;cursor:pointer;font-size:12px;display:block
+      `;
+      btn.onclick = () => banner.remove();
+      banner.appendChild(btn);
+    }
+  }
+}
+
+async function tryFacebookPostFlow() {
+  const { fb_post } = await chrome.storage.local.get("fb_post");
+  if (!fb_post) return;
+  const age = Date.now() - new Date(fb_post.created_at).getTime();
+  if (age > 10 * 60 * 1000) return;
+
+  console.log("OrbitAds: FB Post flow started", fb_post);
+  showOrbitAdsBanner("Preparing post...");
+
+  try {
+    const hasMedia = fb_post.video_url ||
+      (fb_post.exterior_photos || []).length > 0 ||
+      (fb_post.interior_photos || []).length > 0;
+
+    if (hasMedia) {
+      // Setting files on the home-feed input triggers Facebook to open the
+      // photo post composer directly — skip openPostComposer() to avoid a
+      // second dialog being created for the text post.
+      updateBanner("Uploading media...");
+      await uploadFilesToPost(
+        fb_post.exterior_photos || [],
+        fb_post.interior_photos || [],
+        fb_post.video_url || null
+      );
+    } else {
+      updateBanner("Opening post composer...");
+      await openPostComposer();
+    }
+
+    updateBanner("Setting privacy to Public...");
+    await ensurePublicPrivacy();
+
+    updateBanner("Adding caption...");
+    await addCaptionToPost(fb_post.caption);
+
+    await chrome.storage.local.remove("fb_post");
+    chrome.runtime.sendMessage({ type: "FB_POST_COMPLETE", job_id: fb_post.job_id });
+
+    updateBanner("✓ Post ready! Review and click Post.", "success");
+    console.log("OrbitAds: FB Post flow complete");
+
+  } catch (err) {
+    console.error("OrbitAds: FB Post flow failed:", err);
+    updateBanner(`❌ ${err.message}`, "error");
+  }
+}
+
 async function tryFacebookAutoFill() {
   const url = window.location.href;
   if (!url.includes("facebook.com/marketplace/create")) return;
@@ -1312,27 +1594,6 @@ function setNativeValue(element, value) {
   }
 }
 
-function showFbAutoFillBanner() {
-  const banner = document.createElement("div");
-  banner.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background: #1877f2;
-    color: white;
-    padding: 12px 20px;
-    border-radius: 8px;
-    font-family: -apple-system, sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    z-index: 999999;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  `;
-  banner.textContent = "✓ OrbitAds: Listing details filled in!";
-  document.body.appendChild(banner);
-  setTimeout(() => banner.remove(), 4000);
-}
-
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -1394,7 +1655,13 @@ async function init() {
 // Run on page load
 // Small delay lets the page finish rendering dynamic content
 setTimeout(init, 1500);
-setTimeout(tryFacebookAutoFill, 2000)
+setTimeout(tryFacebookAutoFill, 2000);
+
+// FB Post flow — triggered when popup opens facebook.com?orbitads_post=1
+if (window.location.href.includes("facebook.com") &&
+    new URLSearchParams(window.location.search).get("orbitads_post") === "1") {
+  setTimeout(tryFacebookPostFlow, 2500);
+}
 
 // Also run when the URL changes (single-page apps)
 let lastUrl = window.location.href;

@@ -240,6 +240,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "FETCH_FILES") {
+    (async () => {
+      const results = [];
+      for (const { url, isVideo } of (message.files || [])) {
+        try {
+          const resp = await fetch(url);
+          if (!resp.ok) {
+            results.push({ url, ok: false, error: `HTTP ${resp.status}` });
+            continue;
+          }
+          const buffer = await resp.arrayBuffer();
+          const contentType = resp.headers.get("content-type") ||
+            (isVideo ? "video/mp4" : "image/jpeg");
+          results.push({ url, ok: true, buffer, contentType, isVideo });
+        } catch (e) {
+          results.push({ url, ok: false, error: e.message });
+        }
+      }
+      sendResponse({ results });
+    })();
+    return true;
+  }
+
+  if (message.type === "FB_POST_COMPLETE") {
+    chrome.storage.local.remove("fb_post");
+    console.log("OrbitAds: FB Post complete for job", message.job_id);
+    sendResponse({ success: true });
+    return true;
+  }
+
   return true;
 });
 

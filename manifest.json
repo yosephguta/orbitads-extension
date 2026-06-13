@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OrbitAds — Vehicle Importer",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Import vehicle listings and generate AI video ads directly from any dealership website.",
 
   "icons": {
@@ -42,7 +42,9 @@
     "scripting",
     "storage",
     "tabs",
-    "sidePanel"
+    "sidePanel",
+    "clipboardRead",
+    "clipboardWrite"
   ],
 
   "host_permissions": [

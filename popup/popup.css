@@ -1461,3 +1461,126 @@ body {
 .stat-sold.has-sold { background: #fee2e2; }
 .stat-sold.has-sold .stat-value { color: #dc2626; }
 .stat-sold.has-sold .stat-label { color: #dc2626; }
+
+/* ── FB Post Modal ────────────────────────────────────────── */
+.fb-caption-theme-btn {
+  padding: 6px 12px;
+  background: #f3f4f6;
+  border: 2px solid #e5e7eb;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.fb-caption-theme-btn:hover,
+.fb-caption-theme-btn.selected {
+  border-color: #1877f2;
+  background: #eff6ff;
+  color: #1877f2;
+}
+
+.fb-post-photo {
+  position: relative;
+  aspect-ratio: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 3px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.fb-post-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.fb-post-photo.selected {
+  border-color: #1877f2;
+}
+
+.fb-post-photo .photo-check {
+  display: none;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  background: #1877f2;
+  border-radius: 50%;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+}
+
+.fb-post-photo.selected .photo-check {
+  display: flex;
+}
+
+.fb-post-photo .photo-num {
+  display: none;
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  background: rgba(0,0,0,0.6);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.fb-post-photo.selected .photo-num {
+  display: block;
+}
+
+/* ── Toggle switch ─────────────────────────────────────────── */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #d1d5db;
+  border-radius: 24px;
+  transition: 0.3s;
+}
+
+.toggle-slider:before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  bottom: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #1a56db;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(20px);
+}

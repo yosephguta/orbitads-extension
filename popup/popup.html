@@ -365,7 +365,6 @@
     </div>
   </div>
 
-  <script src="popup.js"></script>
   <!-- Sold vehicles modal -->
   <div class="modal-overlay" id="soldModal" style="display:none">
     <div class="modal">
@@ -378,6 +377,86 @@
       </div>
     </div>
   </div>
+
+  <!-- FB Post Modal -->
+  <div class='modal-overlay' id='fbPostModal' style='display:none'>
+    <div class='modal' style='max-height:90vh;display:flex;flex-direction:column'>
+
+      <!-- Header -->
+      <div class='modal-header'>
+        <div class='modal-title'>📘 Create Facebook Post</div>
+        <button class='modal-close' id='closeFbPostModal'>✕</button>
+      </div>
+
+      <!-- Scrollable content -->
+      <div style='overflow-y:auto;flex:1;padding-bottom:8px'>
+
+        <!-- Caption themes -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 8px'>
+          Caption theme
+        </p>
+        <div style='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px'>
+          <button class='fb-caption-theme-btn' data-theme='hype'>🔥 Hype</button>
+          <button class='fb-caption-theme-btn' data-theme='casual'>😎 Casual</button>
+          <button class='fb-caption-theme-btn' data-theme='luxury'>💎 Luxury</button>
+          <button class='fb-caption-theme-btn' data-theme='outdoorsy'>🏔️ Outdoorsy</button>
+          <button class='fb-caption-theme-btn' data-theme='family'>👨‍👩‍👧 Family</button>
+        </div>
+
+        <!-- Caption text box -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 6px'>
+          Caption <span style='font-weight:400;color:#9ca3af'>(edit if needed)</span>
+        </p>
+        <div id='fbCaptionLoading' style='display:none;font-size:12px;color:#6b7280;padding:8px'>
+          ✍️ Generating caption...
+        </div>
+        <textarea id='fbPostCaption' style='
+          width:100%;
+          min-height:120px;
+          padding:10px;
+          border:1px solid #d1d5db;
+          border-radius:8px;
+          font-size:13px;
+          font-family:inherit;
+          resize:vertical;
+          outline:none;
+          line-height:1.5;
+          box-sizing:border-box;
+        ' placeholder='Caption will appear here...'></textarea>
+
+        <!-- Photo selection -->
+        <p style='font-size:15px;font-weight:700;color:#111827;margin:16px 0 10px'>
+          Select photos to post
+        </p>
+        <div id='fbPostPhotoGrid' style='
+          display:grid;
+          grid-template-columns:repeat(3,1fr);
+          gap:4px;
+          margin-bottom:16px;
+        '></div>
+
+      </div>
+
+      <!-- Footer actions -->
+      <div style='
+        display:flex;
+        gap:8px;
+        padding-top:12px;
+        border-top:1px solid #f3f4f6;
+        margin-top:8px;
+      '>
+        <div style='flex:1;align-self:center'>
+          <span style='font-size:16px;font-weight:700;color:#1877f2' id='fbPostSelectedCount'>0</span>
+          <span style='font-size:12px;font-weight:600;color:#374151'> photos selected</span>
+        </div>
+        <button class='btn-secondary' id='closeFbPostModal2'>Cancel</button>
+        <button class='btn-primary' id='fbPostSubmitBtn'>📘 Post to Facebook</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
 </body>
 
 </html>

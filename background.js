@@ -368,8 +368,8 @@ async function enrichSingleVehicle(vehicle) {
         if (!titleMatch) {
           console.warn(`OrbitAds: Title mismatch! Expected ${vehicle.model}, got ${detailData.title}. Skipping detail data.`);
         } else {
-          vehicle.vin = detailData.vin || vehicle.vin;
-          vehicle.price = detailData.price || vehicle.price;
+          vehicle.vin     = detailData.vin     || vehicle.vin;
+          vehicle.price   = detailData.price   || vehicle.price;
           vehicle.mileage = detailData.mileage || vehicle.mileage;
 
           if (detailData.photos?.length > (vehicle.photos?.length || 0)) {
@@ -615,28 +615,9 @@ function extractDetailPageData() {
     .filter(src => !skipPatterns.some(p => src.toLowerCase().includes(p)))
     .slice(0, 40);
 
-  // ── Price ─────────────────────────────────────────────────
-  // ── Price ─────────────────────────────────────────────────
-  // Get the actual dollar amount, not the label
-  const priceEl = document.querySelector(
-    '.final-price.internetPrice.font-weight-bo, ' +
-    '.final-price.internetPrice:not(.price-label)'
-  );
-  // Filter out label text — we want the element with a $ sign
-  let price = null;
-  if (priceEl) {
-    const text = priceEl.innerText?.trim();
-    price = text?.includes('$') ? text : null;
-  }
-  // Fallback — find any element with $ and "price" class
-  if (!price) {
-    const allPriceEls = Array.from(document.querySelectorAll('[class*="price"]'));
-    const dollarEl = allPriceEls.find(el =>
-      el.innerText?.trim().startsWith('$') &&
-      !el.querySelector('*')  // leaf node only
-    );
-    price = dollarEl?.innerText?.trim() || null;
-  }
+  // ── Price — JBA Price (includes processing fee) ───────────
+  const finalPriceEl = document.querySelector('dd.final-price.internetPrice .price-value');
+  const price        = finalPriceEl?.textContent?.trim() || null;
 
   // ── Mileage ───────────────────────────────────────────────
   const mileageEls = Array.from(
@@ -872,6 +853,7 @@ async function realProcessing(job, queue) {
       ? JSON.stringify(v.photos_for_video)
       : null,
     custom_script: jobSnapshot.custom_script || null,
+    price: v.price || null,
   };
 
   console.log("OrbitAds: Sending job to backend:", {
@@ -1029,6 +1011,18 @@ async function processFbQueue() {
   const { fb_post_queue = [], queue = [] } =
     await chrome.storage.local.get(["fb_post_queue", "queue"]);
   const now = Date.now();
+
+  // Reset items stuck in "posting" for more than 5 minutes (tab was closed without confirming)
+  const STUCK_TIMEOUT_MS = 5 * 60 * 1000;
+  let changed = false;
+  fb_post_queue.forEach(j => {
+    if (j.status === "posting" && now - new Date(j.added_at).getTime() > STUCK_TIMEOUT_MS) {
+      j.status = "waiting";
+      j.post_after = now + 3000;
+      changed = true;
+    }
+  });
+  if (changed) await chrome.storage.local.set({ fb_post_queue });
 
   const nextItem = fb_post_queue.find(
     j => j.status === "waiting" && new Date(j.post_after).getTime() <= now

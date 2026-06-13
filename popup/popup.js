@@ -366,40 +366,13 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
 
   // FB Post button
   const fbPostBtn = e.target.closest(".post-fb-post-btn");
-  if (fbPostBtn) {
+  if (fbPostBtn && !fbPostBtn.disabled) {
+    e.stopPropagation();
     const jobId = fbPostBtn.dataset.jobId;
     const { queue = [] } = await chrome.storage.local.get("queue");
     const job = queue.find(j => j.id === jobId);
     if (!job) return;
-
-    const v = job.vehicle || {};
-
-    let exteriorPhotos, interiorPhotos;
-    if (v.photos_exterior?.length > 0) {
-      // Job generated after the classified-photos fix — exact breakdown available
-      exteriorPhotos = v.photos_exterior.slice(0, 4);
-      interiorPhotos = (v.photos_interior || []).slice(0, 2);
-    } else {
-      // Older job — photos_for_video is ordered [exterior..., interior..., additional...]
-      const allPhotos = Array.isArray(v.photos_for_video)
-        ? v.photos_for_video
-        : (() => { try { return JSON.parse(v.photos_for_video || '[]'); } catch { return []; } })();
-      exteriorPhotos = allPhotos.slice(0, 4);
-      interiorPhotos = allPhotos.slice(4, 6);
-    }
-
-    await chrome.storage.local.set({
-      fb_post: {
-        caption: buildFbPostCaption(v),
-        exterior_photos: exteriorPhotos,
-        interior_photos: interiorPhotos,
-        video_url: job.result_url || null,
-        job_id: jobId,
-        created_at: new Date().toISOString(),
-      }
-    });
-
-    chrome.tabs.create({ url: "https://www.facebook.com/?orbitads_post=1" });
+    openFbPostModal(job);
     return;
   }
 
@@ -555,6 +528,7 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
   }
 });
 
+
 // ── Outro settings ────────────────────────────────────────────
 async function loadOutroSettings() {
   const list = document.getElementById("outroSettingsList");
@@ -706,8 +680,195 @@ fbBackBtn.addEventListener("click", () => {
   showScreen(reviewScreen);
 });
 
+// ── FB Post Modal ─────────────────────────────────────────────
+let fbPostModalJob = null;
+let fbPostSelectedPhotos = new Set();
+let fbPostCurrentTheme = 'hype';
+
+function openFbPostModal(job) {
+  fbPostModalJob = job;
+  fbPostSelectedPhotos = new Set();
+  fbPostCurrentTheme = 'hype';
+
+  const modal = document.getElementById('fbPostModal');
+  if (!modal) return;
+
+  const v = job.vehicle || {};
+
+  // Build photo list ordered: exterior → interior → additional → unclassified
+  // vehicle.photos_exterior/interior are the classified buckets saved at review time
+  // vehicle.photos_for_video is the curated selection (ext + int + additional)
+  // vehicle.photos is the full scrape — unclassified = in photos but not in photos_for_video
+  const parseArr = raw => Array.isArray(raw)
+    ? raw
+    : (() => { try { return JSON.parse(raw || '[]'); } catch { return []; } })();
+
+  const exterior    = parseArr(v.photos_exterior);
+  const interior    = parseArr(v.photos_interior);
+  const forVideo    = parseArr(v.photos_for_video);
+  const allOriginal = parseArr(v.photos || v.car_photo_urls || []);
+
+  const extSet = new Set(exterior);
+  const intSet = new Set(interior);
+  const forVideoSet = new Set(forVideo);
+
+  const additional    = forVideo.filter(url => !extSet.has(url) && !intSet.has(url));
+  const unclassified  = allOriginal.filter(url => !forVideoSet.has(url));
+
+  let allPhotos = [...exterior, ...interior, ...additional, ...unclassified];
+
+  // Fallback if nothing came through
+  if (allPhotos.length === 0) allPhotos = forVideo.length ? forVideo : allOriginal;
+
+  // Pre-select first 6
+  allPhotos.slice(0, 6).forEach(url => fbPostSelectedPhotos.add(url));
+
+  // Render photo grid
+  const grid = document.getElementById('fbPostPhotoGrid');
+  if (grid) {
+    grid.innerHTML = allPhotos.map((url, i) => {
+      const sel = fbPostSelectedPhotos.has(url);
+      const num = sel ? [...fbPostSelectedPhotos].indexOf(url) + 1 : '';
+      return `<div class='fb-post-photo ${sel ? 'selected' : ''}' data-url='${url}' data-index='${i}'>
+        <img src='${url}' loading='lazy' alt='Photo ${i + 1}'>
+        <div class='photo-check'>✓</div>
+        <div class='photo-num'>${num}</div>
+      </div>`;
+    }).join('');
+
+    grid.querySelectorAll('.fb-post-photo').forEach(photo => {
+      photo.addEventListener('click', () => {
+        const url = photo.dataset.url;
+        if (fbPostSelectedPhotos.has(url)) {
+          fbPostSelectedPhotos.delete(url);
+        } else {
+          fbPostSelectedPhotos.add(url);
+        }
+        updateFbPostSelectionUI();
+      });
+    });
+  }
+
+  // Reset theme buttons
+  document.querySelectorAll('.fb-caption-theme-btn').forEach(btn => {
+    btn.classList.toggle('selected', btn.dataset.theme === 'hype');
+  });
+
+  updateFbPostSelectionUI();
+
+  modal.style.display = 'flex';
+
+  // Auto-generate caption with default theme
+  generateFbPostCaption(job, fbPostCurrentTheme);
+}
+
+async function generateFbPostCaption(job, theme) {
+  const loadingEl = document.getElementById('fbCaptionLoading');
+  const captionEl = document.getElementById('fbPostCaption');
+  if (!captionEl) return;
+
+  if (loadingEl) loadingEl.style.display = 'block';
+  captionEl.style.display = 'none';
+  captionEl.value = '';
+
+  try {
+    const { token } = await chrome.storage.local.get('token');
+    const v = job.vehicle || {};
+    const res = await fetch(`${API_BASE}/listings/generate-fb-post-caption`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({
+        year:    v.year    || null,
+        make:    v.make    || null,
+        model:   v.model   || null,
+        trim:    v.trim    || null,
+        price:   v.price || null,
+        mileage: v.mileage || null,
+        theme,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      captionEl.value = data.caption || '';
+    }
+  } catch {
+    // leave textarea empty — user can type manually
+  } finally {
+    if (loadingEl) loadingEl.style.display = 'none';
+    captionEl.style.display = 'block';
+  }
+}
+
+function updateFbPostSelectionUI() {
+  const countEl = document.getElementById('fbPostSelectedCount');
+  if (countEl) countEl.textContent = fbPostSelectedPhotos.size;
+
+  const grid = document.getElementById('fbPostPhotoGrid');
+  if (!grid) return;
+
+  let selIndex = 1;
+  const selectedArr = [...fbPostSelectedPhotos];
+  grid.querySelectorAll('.fb-post-photo').forEach(photo => {
+    const url = photo.dataset.url;
+    const numEl = photo.querySelector('.photo-num');
+    if (fbPostSelectedPhotos.has(url)) {
+      photo.classList.add('selected');
+      if (numEl) numEl.textContent = selectedArr.indexOf(url) + 1;
+    } else {
+      photo.classList.remove('selected');
+      if (numEl) numEl.textContent = '';
+    }
+  });
+}
+
+// Theme button handlers
+document.querySelectorAll('.fb-caption-theme-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    fbPostCurrentTheme = btn.dataset.theme;
+    document.querySelectorAll('.fb-caption-theme-btn').forEach(b =>
+      b.classList.toggle('selected', b === btn)
+    );
+    if (fbPostModalJob) generateFbPostCaption(fbPostModalJob, fbPostCurrentTheme);
+  });
+});
+
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
+  // FB Post modal close handlers
+  document.getElementById("closeFbPostModal").onclick = () => {
+    document.getElementById("fbPostModal").style.display = "none";
+  };
+  document.getElementById("closeFbPostModal2").onclick = () => {
+    document.getElementById("fbPostModal").style.display = "none";
+  };
+
+  // FB Post submit handler
+  document.getElementById("fbPostSubmitBtn").onclick = async () => {
+    const photos = [...fbPostSelectedPhotos];
+    if (photos.length === 0) {
+      alert("Please select at least one photo.");
+      return;
+    }
+    const caption = document.getElementById("fbPostCaption")?.value?.trim() || "";
+    // Write caption to real clipboard while we have user gesture context —
+    // the content script will execCommand('paste') into the Lexical editor,
+    // which preserves line breaks (synthetic paste events do not).
+    if (caption) {
+      try { await navigator.clipboard.writeText(caption); } catch (e) { /* ignore */ }
+    }
+    await chrome.storage.local.set({
+      fb_post: {
+        photos,
+        caption,
+        video_url: fbPostModalJob?.result_url || null,
+        job_id: fbPostModalJob?.id || null,
+        created_at: new Date().toISOString(),
+      },
+    });
+    document.getElementById("fbPostModal").style.display = "none";
+    chrome.tabs.create({ url: "https://www.facebook.com/?orbitads_post=1" });
+  };
+
   const { token, user } = await chrome.storage.local.get(["token", "user"]);
 
   // Clear any stuck pending_review on startup

@@ -163,29 +163,19 @@ async function loadSoldModalContent() {
       return;
     }
 
-    // Trigger a fresh check
-    const activeIds = active.map(l => l.id);
-    if (activeIds.length > 0) {
-      const checkResp = await apiFetch(`${API_BASE}/listings/check-sold`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
-        },
-        body: JSON.stringify({ listing_ids: activeIds }),
-      });
+    // Trigger a fresh check via background script (runs in browser context — no IP blocking)
+    if (active.length > 0) {
+      await new Promise(resolve => chrome.runtime.sendMessage({ type: 'RUN_SOLD_CHECK' }, resolve));
 
-      if (checkResp.ok) {
-        // Always refresh after check so last_checked_at timestamps are current
-        const refreshResp = await apiFetch(`${API_BASE}/listings/`, {
-          headers: { "Authorization": `Bearer ${token}` },
-        });
-        if (refreshResp.ok) {
-          const refreshed = await refreshResp.json();
-          content.innerHTML = renderSoldModalContent(refreshed);
-          updateSoldStat(refreshed);
-          return;
-        }
+      // Refresh listings so last_checked_at and is_sold are up to date
+      const refreshResp = await apiFetch(`${API_BASE}/listings/`, {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      if (refreshResp.ok) {
+        const refreshed = await refreshResp.json();
+        content.innerHTML = renderSoldModalContent(refreshed);
+        updateSoldStat(refreshed);
+        return;
       }
     }
 

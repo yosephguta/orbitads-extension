@@ -143,6 +143,14 @@ export const DEALERSHIP_CONFIGS = {
       exterior_count:    14,
       interior_position: "middle",
     },
+    // JBA returns HTTP 200 with a custom alias-404 page when a vehicle sells
+    sold_indicators: [
+      'alias-404',
+      'goneAliasRedirect',
+      'redirectFromMissingVDP=true',
+      'this vehicle has been sold',
+      'no longer available',
+    ],
   },
 
   "www.jbakia.com": {
@@ -154,6 +162,13 @@ export const DEALERSHIP_CONFIGS = {
       exterior_count:    14,
       interior_position: "middle",
     },
+    sold_indicators: [
+      'alias-404',
+      'goneAliasRedirect',
+      'redirectFromMissingVDP=true',
+      'this vehicle has been sold',
+      'no longer available',
+    ],
   },
 
   // ── Template for adding new dealerships ───────────────────

@@ -176,18 +176,15 @@ async function loadSoldModalContent() {
       });
 
       if (checkResp.ok) {
-        const { sold_ids } = await checkResp.json();
-        if (sold_ids.length > 0) {
-          // Refresh listings after check
-          const refreshResp = await apiFetch(`${API_BASE}/listings/`, {
-            headers: { "Authorization": `Bearer ${token}` },
-          });
-          if (refreshResp.ok) {
-            const refreshed = await refreshResp.json();
-            content.innerHTML = renderSoldModalContent(refreshed);
-            updateSoldStat(refreshed);
-            return;
-          }
+        // Always refresh after check so last_checked_at timestamps are current
+        const refreshResp = await apiFetch(`${API_BASE}/listings/`, {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+        if (refreshResp.ok) {
+          const refreshed = await refreshResp.json();
+          content.innerHTML = renderSoldModalContent(refreshed);
+          updateSoldStat(refreshed);
+          return;
         }
       }
     }
@@ -202,8 +199,9 @@ async function loadSoldModalContent() {
 }
 
 function renderSoldModalContent(listings) {
-  const sold = listings.filter(l => l.is_sold);
-  const active = listings.filter(l => l.fb_posted && !l.is_sold);
+  const sold     = listings.filter(l => l.is_sold);
+  const active   = listings.filter(l => l.fb_posted && !l.is_sold);
+  const unchecked = listings.filter(l => l.fb_posted && !l.last_checked_at);
 
   let html = "";
 
@@ -211,14 +209,17 @@ function renderSoldModalContent(listings) {
     html += `<div style="margin-bottom:16px">
       <div style="font-size:12px;font-weight:700;color:#dc2626;
                   text-transform:uppercase;margin-bottom:8px">
-        🚨 May Be Sold (${sold.length})
+        🚨 Sold — Remove from Facebook (${sold.length})
       </div>`;
     sold.forEach(l => {
       const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ");
+      const detectedDate = l.sold_detected_at
+        ? new Date(l.sold_detected_at).toLocaleDateString()
+        : "Recently";
       html += `<div class="recent-ad-card" style="border-left:3px solid #dc2626">
         <div class="recent-ad-info">
           <div class="recent-ad-title">${title}</div>
-          <div class="recent-ad-meta">${l.price || ""} · Remove from Facebook</div>
+          <div class="recent-ad-meta">${l.price || ""} · Detected sold: ${detectedDate}</div>
         </div>
         <span class="recent-ad-sold">Sold</span>
       </div>`;
@@ -227,17 +228,20 @@ function renderSoldModalContent(listings) {
   }
 
   if (active.length > 0) {
-    html += `<div>
+    html += `<div style="margin-bottom:16px">
       <div style="font-size:12px;font-weight:700;color:#16a34a;
                   text-transform:uppercase;margin-bottom:8px">
         ✓ Still Active (${active.length})
       </div>`;
     active.forEach(l => {
       const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ");
+      const checkedDate = l.last_checked_at
+        ? new Date(l.last_checked_at).toLocaleDateString()
+        : "Not yet checked";
       html += `<div class="recent-ad-card" style="border-left:3px solid #16a34a">
         <div class="recent-ad-info">
           <div class="recent-ad-title">${title}</div>
-          <div class="recent-ad-meta">${l.price || ""}</div>
+          <div class="recent-ad-meta">${l.price || ""} · Last checked: ${checkedDate}</div>
         </div>
         <span style="color:#16a34a;font-size:11px;font-weight:600">Active</span>
       </div>`;
@@ -245,9 +249,15 @@ function renderSoldModalContent(listings) {
     html += `</div>`;
   }
 
+  if (unchecked.length > 0) {
+    html += `<div style="font-size:11px;color:#9ca3af;text-align:center;padding:8px">
+      ${unchecked.length} listing(s) not yet checked — check again in a few minutes
+    </div>`;
+  }
+
   if (sold.length === 0 && active.length === 0) {
     html = `<p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">
-      No posted listings found.</p>`;
+      No posted listings found. Post a vehicle to Facebook first.</p>`;
   }
 
   return html;

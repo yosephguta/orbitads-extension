@@ -1110,19 +1110,24 @@ async function confirmFbPosted(queueItemId) {
 // ── Daily sold vehicle checker ────────────────────────────────
 async function runDailySoldCheck() {
   const { token, last_sold_check } =
-    await chrome.storage.local.get(["token", "last_sold_check"]);
+    await chrome.storage.local.get(['token', 'last_sold_check']);
 
   if (!token) return;
 
   // Only run once per 6 hours
-  const now = Date.now();
+  const now      = Date.now();
   const sixHours = 6 * 60 * 60 * 1000;
-  if (last_sold_check && now - last_sold_check < sixHours) return;
+  if (last_sold_check && now - last_sold_check < sixHours) {
+    console.log('OrbitAds: Sold check skipped — ran recently');
+    return;
+  }
 
   try {
+    console.log('OrbitAds: Running sold check...');
+
     // Get posted listings from backend
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
-      headers: { "Authorization": `Bearer ${token}` },
+      headers: { 'Authorization': `Bearer ${token}` }
     });
     if (listingsResp.status === 401) { await handleExpiredToken(); return; }
     if (!listingsResp.ok) return;
@@ -1130,52 +1135,61 @@ async function runDailySoldCheck() {
     const listings = await listingsResp.json();
 
     // Only check listings that are posted and not already marked sold
-    const activeIds = listings
-      .filter(l => l.fb_posted && !l.is_sold && l.listing_url)
+    const activePostedIds = listings
+      .filter(l => l.fb_posted && !l.is_sold)
       .map(l => l.id);
 
-    if (activeIds.length === 0) {
+    if (activePostedIds.length === 0) {
+      console.log('OrbitAds: No active posted listings to check');
       await chrome.storage.local.set({ last_sold_check: now });
       return;
     }
 
-    console.log(`OrbitAds: Checking ${activeIds.length} posted listings for sold status...`);
+    console.log(`OrbitAds: Checking ${activePostedIds.length} listings for sold status`);
 
+    // Delegate to backend — backend does the actual URL checking
     const checkResp = await fetch(`${API_BASE}/listings/check-sold`, {
-      method: "POST",
+      method:  'POST',
       headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`,
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({ listing_ids: activeIds }),
+      body: JSON.stringify({ listing_ids: activePostedIds }),
     });
 
-    if (checkResp.status === 401) { await handleExpiredToken(); return; }
-    if (!checkResp.ok) return;
+    if (!checkResp.ok) {
+      console.log('OrbitAds: Sold check request failed:', checkResp.status);
+      return;
+    }
 
     const { sold_ids } = await checkResp.json();
 
-    // Store sold notifications
-    const { sold_notifications = [] } =
-      await chrome.storage.local.get("sold_notifications");
+    if (sold_ids.length > 0) {
+      console.log(`OrbitAds: ${sold_ids.length} vehicle(s) detected as sold!`);
 
-    const newSold = sold_ids.filter(id => !sold_notifications.includes(id));
+      // Store sold notifications
+      const { sold_notifications = [] } =
+        await chrome.storage.local.get('sold_notifications');
 
-    if (newSold.length > 0) {
-      const updatedNotifications = [...sold_notifications, ...newSold];
-      await chrome.storage.local.set({ sold_notifications: updatedNotifications });
+      const newSold = sold_ids.filter(id => !sold_notifications.includes(id));
 
-      // Red badge
-      chrome.action.setBadgeText({ text: "🔴" });
-      chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
+      if (newSold.length > 0) {
+        await chrome.storage.local.set({
+          sold_notifications: [...sold_notifications, ...newSold]
+        });
 
-      console.log(`OrbitAds: ${newSold.length} vehicles may be sold!`);
+        // Red badge on extension icon
+        chrome.action.setBadgeText({ text: '🔴' });
+        chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+      }
+    } else {
+      console.log('OrbitAds: All posted listings still active');
     }
 
     await chrome.storage.local.set({ last_sold_check: now });
 
   } catch (err) {
-    console.error("OrbitAds: Sold check failed:", err);
+    console.error('OrbitAds: Sold check error:', err);
   }
 }
 

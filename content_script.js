@@ -745,16 +745,19 @@ async function addCaptionToPost(caption) {
   await new Promise(r => setTimeout(r, 300));
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
-  document.execCommand('insertText', false, caption);
+  await new Promise(r => setTimeout(r, 100));
+
+  // The popup wrote the caption to the real clipboard (in user-gesture context).
+  // execCommand('paste') with clipboardRead permission pastes the real clipboard
+  // into the focused Lexical editor, which preserves newlines as paragraphs.
+  document.execCommand('paste', false, null);
+
   await new Promise(r => setTimeout(r, 400));
   console.log("OrbitAds: caption inserted");
 }
 
-async function uploadFilesToPost(exteriorPhotos, interiorPhotos, videoUrl) {
-  const photoUrls = [
-    ...(exteriorPhotos || []).slice(0, 4),
-    ...(interiorPhotos || []).slice(0, 2),
-  ];
+async function uploadFilesToPost(photos, videoUrl) {
+  const photoUrls = photos || [];
 
   if (photoUrls.length === 0 && !videoUrl) {
     console.log("OrbitAds: no files to upload, skipping");
@@ -775,19 +778,21 @@ async function uploadFilesToPost(exteriorPhotos, interiorPhotos, videoUrl) {
 
   const dt = new DataTransfer();
 
-  // ── Photos ─────────────────────────────────────────────────────
-  for (let i = 0; i < photoUrls.length; i++) {
+  // ── Photos — fetch all in parallel ────────────────────────────
+  const photoFiles = await Promise.all(photoUrls.map(async (url, i) => {
     try {
-      const resp = await fetch(photoUrls[i]);
-      if (!resp.ok) { console.warn(`OrbitAds: photo ${i + 1} HTTP ${resp.status}`); continue; }
+      const resp = await fetch(url);
+      if (!resp.ok) { console.warn(`OrbitAds: photo ${i + 1} HTTP ${resp.status}`); return null; }
       const blob = await resp.blob();
       console.log(`OrbitAds: photo ${i + 1}: ${(blob.size / 1024).toFixed(0)}KB`);
-      const ext = photoUrls[i].split('?')[0].split('.').pop().toLowerCase() || 'jpg';
-      dt.items.add(new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' }));
+      const ext = url.split('?')[0].split('.').pop().toLowerCase() || 'jpg';
+      return new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' });
     } catch (e) {
       console.warn(`OrbitAds: photo ${i + 1} error:`, e.message);
+      return null;
     }
-  }
+  }));
+  photoFiles.filter(Boolean).forEach(f => dt.items.add(f));
 
   // ── Video ──────────────────────────────────────────────────────
   if (videoUrl && acceptsVideo) {
@@ -914,20 +919,19 @@ async function tryFacebookPostFlow() {
   showOrbitAdsBanner("Preparing post...");
 
   try {
-    const hasMedia = fb_post.video_url ||
-      (fb_post.exterior_photos || []).length > 0 ||
-      (fb_post.interior_photos || []).length > 0;
+    // Support both new flat `photos` array (from modal) and old exterior/interior split
+    const flatPhotos = fb_post.photos && fb_post.photos.length > 0
+      ? fb_post.photos
+      : [...(fb_post.exterior_photos || []), ...(fb_post.interior_photos || [])];
+
+    const hasMedia = fb_post.video_url || flatPhotos.length > 0;
 
     if (hasMedia) {
       // Setting files on the home-feed input triggers Facebook to open the
       // photo post composer directly — skip openPostComposer() to avoid a
       // second dialog being created for the text post.
       updateBanner("Uploading media...");
-      await uploadFilesToPost(
-        fb_post.exterior_photos || [],
-        fb_post.interior_photos || [],
-        fb_post.video_url || null
-      );
+      await uploadFilesToPost(flatPhotos, fb_post.video_url || null);
     } else {
       updateBanner("Opening post composer...");
       await openPostComposer();
@@ -941,6 +945,11 @@ async function tryFacebookPostFlow() {
 
     await chrome.storage.local.remove("fb_post");
     chrome.runtime.sendMessage({ type: "FB_POST_COMPLETE", job_id: fb_post.job_id });
+    chrome.runtime.sendMessage({
+      type: "MARK_LISTING_POSTED",
+      vehicle: fb_post.vehicle,
+      listing_url: fb_post.vehicle?.listing_url,
+    });
 
     updateBanner("✓ Post ready! Review and click Post.", "success");
     console.log("OrbitAds: FB Post flow complete");
@@ -948,6 +957,144 @@ async function tryFacebookPostFlow() {
   } catch (err) {
     console.error("OrbitAds: FB Post flow failed:", err);
     updateBanner(`❌ ${err.message}`, "error");
+  }
+}
+
+async function clickFirstGroup() {
+  console.log('OrbitAds: Looking for first group in sidebar...');
+
+  // Find group items by looking for 'Last active' sibling text (sidebar items have this)
+  const allSpans = document.querySelectorAll('span');
+  let firstGroupEl = null;
+
+  for (const span of allSpans) {
+    if (span.textContent?.includes('Last active') &&
+        span.closest('[role="listitem"], [role="link"], a')) {
+      const clickable = span.closest('a, [role="link"]');
+      if (clickable) {
+        firstGroupEl = clickable;
+        break;
+      }
+    }
+  }
+
+  // Fallback: any /groups/<id> link that isn't a feed/discover/joins page
+  if (!firstGroupEl) {
+    const groupLinks = document.querySelectorAll('a[href*="/groups/"]');
+    for (const link of groupLinks) {
+      const href = link.getAttribute('href') || '';
+      if (href.includes('/groups/') &&
+          !href.match(/\/groups\/?$/) &&
+          !href.includes('/groups/feed') &&
+          !href.includes('/groups/discover') &&
+          !href.includes('/groups/joins')) {
+        firstGroupEl = link;
+        break;
+      }
+    }
+  }
+
+  if (!firstGroupEl) {
+    console.log('OrbitAds: No groups found in sidebar');
+    return false;
+  }
+
+  const groupName = firstGroupEl.textContent?.trim().split('\n')[0] || 'Unknown Group';
+  console.log(`OrbitAds: Clicking group: ${groupName}`);
+  firstGroupEl.click();
+  await sleep(3000);
+  return true;
+}
+
+async function clickWriteSomethingInGroup() {
+  console.log('OrbitAds: Looking for Write something button...');
+
+  const allButtons = document.querySelectorAll('[role="button"]');
+  let writeBtn = null;
+
+  for (const btn of allButtons) {
+    if (btn.textContent?.includes('Write something')) {
+      writeBtn = btn;
+      break;
+    }
+  }
+
+  if (!writeBtn) {
+    console.log('OrbitAds: Write something button not found');
+    return false;
+  }
+
+  console.log('OrbitAds: Clicking Write something...');
+  writeBtn.click();
+  await sleep(2000);
+  return true;
+}
+
+async function scrollToAddGroupsButton() {
+  const allSpans = document.querySelectorAll('span');
+  for (const span of allSpans) {
+    if (span.textContent?.trim() === 'Add groups') {
+      span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      console.log('OrbitAds: Scrolled to Add groups button');
+      return;
+    }
+  }
+}
+
+async function tryFacebookGroupsFlow() {
+  console.log('OrbitAds: Starting Facebook Groups post flow...');
+
+  const { fb_groups_post } = await chrome.storage.local.get('fb_groups_post');
+  if (!fb_groups_post) {
+    console.log('OrbitAds: No fb_groups_post data found');
+    return;
+  }
+
+  showOrbitAdsBanner('👥 OrbitAds: Finding your groups...');
+
+  try {
+    updateBanner('👥 OrbitAds: Selecting first group...');
+    const groupClicked = await clickFirstGroup();
+
+    if (!groupClicked) {
+      updateBanner('❌ No groups found. Make sure you are a member of Facebook groups.', 'error');
+      return;
+    }
+
+    await sleep(3000);
+    updateBanner('👥 OrbitAds: Opening post composer...');
+
+    const composerOpened = await clickWriteSomethingInGroup();
+
+    if (!composerOpened) {
+      updateBanner('❌ Could not open composer. Try clicking Write something manually.', 'error');
+      return;
+    }
+
+    await sleep(2000);
+
+    updateBanner('👥 OrbitAds: Adding caption...');
+    await addCaptionToPost(fb_groups_post.caption);
+    await sleep(500);
+
+    updateBanner('👥 OrbitAds: Uploading photos & video...');
+    await uploadFilesToPost(fb_groups_post.photos, fb_groups_post.video_url);
+
+    updateBanner('✅ Ready! Click Add Groups to share to more groups, then click Post.', 'success');
+    await scrollToAddGroupsButton();
+    setTimeout(() => document.querySelector('.orbitads-post-banner')?.remove(), 6000);
+
+    await chrome.storage.local.remove('fb_groups_post');
+    chrome.runtime.sendMessage({ type: 'FB_GROUPS_POST_COMPLETE' });
+    chrome.runtime.sendMessage({
+      type: 'MARK_LISTING_POSTED',
+      vehicle: fb_groups_post.vehicle,
+      listing_url: fb_groups_post.vehicle?.listing_url,
+    });
+
+  } catch (err) {
+    console.error('OrbitAds: Groups flow error:', err);
+    updateBanner(`❌ Error: ${err.message}. Please try again.`, 'error');
   }
 }
 
@@ -1660,7 +1807,14 @@ setTimeout(tryFacebookAutoFill, 2000);
 // FB Post flow — triggered when popup opens facebook.com?orbitads_post=1
 if (window.location.href.includes("facebook.com") &&
     new URLSearchParams(window.location.search).get("orbitads_post") === "1") {
-  setTimeout(tryFacebookPostFlow, 2500);
+  setTimeout(tryFacebookPostFlow, 1000);
+}
+
+// FB Groups post flow — triggered when popup opens facebook.com/groups/feed/?orbitads_groups=1
+if (window.location.href.includes("facebook.com") &&
+    new URLSearchParams(window.location.search).get("orbitads_groups") === "1") {
+  console.log('OrbitAds: FB groups post mode detected');
+  setTimeout(tryFacebookGroupsFlow, 4000);
 }
 
 // Also run when the URL changes (single-page apps)

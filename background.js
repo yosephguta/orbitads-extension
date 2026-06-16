@@ -291,6 +291,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'FB_GROUPS_POST_COMPLETE') {
+    console.log('OrbitAds: FB groups post completed');
+    sendResponse({ success: true });
+    return true;
+  }
+
   return true;
 });
 

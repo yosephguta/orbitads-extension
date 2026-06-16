@@ -376,6 +376,18 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     return;
   }
 
+  // Post to Groups button
+  const postGroupsBtn = e.target.closest(".post-groups-btn");
+  if (postGroupsBtn && !postGroupsBtn.disabled) {
+    e.stopPropagation();
+    const jobId = postGroupsBtn.dataset.jobId;
+    const { queue = [] } = await chrome.storage.local.get("queue");
+    const job = queue.find(j => j.id === jobId);
+    if (!job) return;
+    openFbPostModal(job, 'groups');
+    return;
+  }
+
   // Remove failed button
   const removeBtn = e.target.closest(".remove-failed-btn");
   if (removeBtn) {
@@ -684,9 +696,11 @@ fbBackBtn.addEventListener("click", () => {
 let fbPostModalJob = null;
 let fbPostSelectedPhotos = new Set();
 let fbPostCurrentTheme = 'hype';
+let fbPostModalMode = 'post';
 
-function openFbPostModal(job) {
+function openFbPostModal(job, mode = 'post') {
   fbPostModalJob = job;
+  fbPostModalMode = mode;
   fbPostSelectedPhotos = new Set();
   fbPostCurrentTheme = 'hype';
 
@@ -755,6 +769,20 @@ function openFbPostModal(job) {
   });
 
   updateFbPostSelectionUI();
+
+  // Update title and submit button based on mode
+  const modalTitle = modal.querySelector('.modal-title');
+  if (modalTitle) {
+    modalTitle.textContent = mode === 'groups'
+      ? '👥 Post to Facebook Groups'
+      : '📘 Create Facebook Post';
+  }
+  const submitBtn = document.getElementById('fbPostSubmitBtn');
+  if (submitBtn) {
+    submitBtn.textContent = mode === 'groups'
+      ? '👥 Post to Groups'
+      : '📘 Post to Facebook';
+  }
 
   modal.style.display = 'flex';
 
@@ -856,17 +884,46 @@ async function init() {
     if (caption) {
       try { await navigator.clipboard.writeText(caption); } catch (e) { /* ignore */ }
     }
-    await chrome.storage.local.set({
-      fb_post: {
-        photos,
-        caption,
-        video_url: fbPostModalJob?.result_url || null,
-        job_id: fbPostModalJob?.id || null,
-        created_at: new Date().toISOString(),
-      },
-    });
-    document.getElementById("fbPostModal").style.display = "none";
-    chrome.tabs.create({ url: "https://www.facebook.com/?orbitads_post=1" });
+
+    const submitBtn = document.getElementById("fbPostSubmitBtn");
+    const originalText = submitBtn.textContent;
+    submitBtn.textContent = '⏳ Opening Facebook...';
+    submitBtn.disabled = true;
+
+    try {
+      if (fbPostModalMode === 'groups') {
+        await chrome.storage.local.set({
+          fb_groups_post: {
+            caption,
+            photos,
+            video_url: fbPostModalJob?.result_url || null,
+            vehicle: fbPostModalJob?.vehicle,
+            mode: 'groups',
+            created_at: new Date().toISOString(),
+          },
+        });
+        document.getElementById("fbPostModal").style.display = "none";
+        chrome.tabs.create({ url: "https://www.facebook.com/groups/feed/?orbitads_groups=1" });
+      } else {
+        await chrome.storage.local.set({
+          fb_post: {
+            photos,
+            caption,
+            video_url: fbPostModalJob?.result_url || null,
+            job_id: fbPostModalJob?.id || null,
+            vehicle: fbPostModalJob?.vehicle,
+            created_at: new Date().toISOString(),
+          },
+        });
+        document.getElementById("fbPostModal").style.display = "none";
+        chrome.tabs.create({ url: "https://www.facebook.com/?orbitads_post=1" });
+      }
+    } catch (err) {
+      console.error('FB Post submit error:', err);
+      alert('Failed to open Facebook. Please try again.');
+      submitBtn.textContent = originalText;
+      submitBtn.disabled = false;
+    }
   };
 
   const { token, user } = await chrome.storage.local.get(["token", "user"]);
@@ -1301,6 +1358,9 @@ function renderUnifiedCard(card) {
                      <button class='btn-small post-fb-post-btn'
                              data-job-id='${job.id}'
                              style='background:#4267B2;font-size:11px'>📘 FB Post</button>
+                     <button class='btn-small post-groups-btn'
+                             data-job-id='${job.id}'
+                             style='background:#1b4332;font-size:11px'>👥 Groups</button>
                    </div>`;
     } else if (job.status === "failed") {
       badgeClass = "badge-failed";

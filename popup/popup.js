@@ -130,6 +130,40 @@ soldCheckerStat?.addEventListener("click", async () => {
   await loadSoldModalContent();
 });
 
+// Dismiss sold listing (X button inside sold modal)
+document.getElementById("soldModalContent")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".clear-sold-btn");
+  if (!btn) return;
+
+  const listingId = btn.dataset.listingId;
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) return;
+
+  btn.textContent = "...";
+  btn.disabled = true;
+
+  try {
+    const resp = await apiFetch(`${API_BASE}/listings/${listingId}/clear-sold`, {
+      method: "PATCH",
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error("Failed");
+
+    // Also clear from local sold_notifications
+    const { sold_notifications = [] } = await chrome.storage.local.get("sold_notifications");
+    await chrome.storage.local.set({
+      sold_notifications: sold_notifications.filter(id => String(id) !== String(listingId)),
+    });
+
+    // Refresh modal content
+    await loadSoldModalContent();
+  } catch (err) {
+    btn.textContent = "✕";
+    btn.disabled = false;
+    console.error("OrbitAds: Failed to clear sold flag:", err);
+  }
+});
+
 
 async function loadSoldModalContent() {
   const content = document.getElementById("soldModalContent");
@@ -211,7 +245,13 @@ function renderSoldModalContent(listings) {
           <div class="recent-ad-title">${title}</div>
           <div class="recent-ad-meta">${l.price || ""} · Detected sold: ${detectedDate}</div>
         </div>
-        <span class="recent-ad-sold">Sold</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="recent-ad-sold">Sold</span>
+          <button class="btn-small clear-sold-btn"
+                  data-listing-id="${l.id}"
+                  style="background:#6b7280;font-size:10px;padding:2px 6px"
+                  title="Dismiss — I've removed this from Facebook">✕</button>
+        </div>
       </div>`;
     });
     html += `</div>`;
@@ -782,6 +822,7 @@ function openFbPostModal(job, mode = 'post') {
     submitBtn.textContent = mode === 'groups'
       ? '👥 Post to Groups'
       : '📘 Post to Facebook';
+    submitBtn.disabled = false;
   }
 
   modal.style.display = 'flex';

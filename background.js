@@ -107,7 +107,6 @@ const DEALERSHIP_CONFIGS = {
     },
     sold_indicators: [
       'alias-404',
-      'goneAliasRedirect',
       'redirectFromMissingVDP=true',
       'this vehicle has been sold',
       'no longer available',
@@ -124,7 +123,6 @@ const DEALERSHIP_CONFIGS = {
     },
     sold_indicators: [
       'alias-404',
-      'goneAliasRedirect',
       'redirectFromMissingVDP=true',
       'this vehicle has been sold',
       'no longer available',

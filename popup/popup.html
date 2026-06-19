@@ -248,7 +248,7 @@
   </div>
 
   <!-- ── Facebook listing preview screen ───────────────────── -->
-  <div class="screen" id="fbListingScreen" style="display:none">
+  <div class="screen" id="fbListingScreen" style="display:none;visibility:hidden;pointer-events:none">
     <div id="fbLoadingBanner" style="display:none;font-size:12px;color:#1a56db;background:#eff6ff;padding:6px 12px;text-align:center;border-bottom:1px solid #bfdbfe"></div>
     <div class="review-header">
       <div class="review-header-top">
@@ -407,7 +407,7 @@
         <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 6px'>
           Caption <span style='font-weight:400;color:#9ca3af'>(edit if needed)</span>
         </p>
-        <div id='fbCaptionLoading' style='display:none;font-size:12px;color:#6b7280;padding:8px'>
+        <div id='fbCaptionLoading' style='display:none;font-size:12px;font-weight:600;color:#374151;padding:8px;animation:pulse 1.5s ease-in-out infinite'>
           ✍️ Generating caption...
         </div>
         <textarea id='fbPostCaption' style='
@@ -451,6 +451,87 @@
         </div>
         <button class='btn-secondary' id='closeFbPostModal2'>Cancel</button>
         <button class='btn-primary' id='fbPostSubmitBtn'>📘 Post to Facebook</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Marketplace Post Modal -->
+  <div class='modal-overlay' id='marketplaceModal' style='display:none'>
+    <div class='modal' style='max-height:90vh;display:flex;flex-direction:column'>
+
+      <!-- Header -->
+      <div class='modal-header'>
+        <div class='modal-title'>🏪 Post to Marketplace</div>
+        <button class='modal-close' id='closeMarketplaceModal'>✕</button>
+      </div>
+
+      <!-- Scrollable content -->
+      <div style='overflow-y:auto;flex:1;padding-bottom:8px'>
+
+        <!-- Description themes -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 8px'>
+          Listing style
+        </p>
+        <div style='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px'>
+          <button class='fb-caption-theme-btn mp-theme-btn' data-theme='value'>💰 Value</button>
+          <button class='fb-caption-theme-btn mp-theme-btn' data-theme='performance'>🏎️ Performance</button>
+          <button class='fb-caption-theme-btn mp-theme-btn' data-theme='family'>👨‍👩‍👧 Family</button>
+          <button class='fb-caption-theme-btn mp-theme-btn' data-theme='luxury'>💎 Luxury</button>
+          <button class='fb-caption-theme-btn mp-theme-btn' data-theme='commuter'>🏙️ Commuter</button>
+        </div>
+
+        <!-- Description -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 6px'>
+          Description <span style='font-weight:400;color:#9ca3af'>(edit if needed)</span>
+        </p>
+        <div id='mpCaptionLoading' style='display:none;font-size:12px;font-weight:600;color:#374151;padding:8px;animation:pulse 1.5s ease-in-out infinite'>
+          ✍️ Generating listing description...
+        </div>
+        <textarea id='mpDescription' style='
+          width:100%;
+          min-height:150px;
+          padding:10px;
+          border:1px solid #d1d5db;
+          border-radius:8px;
+          font-size:12px;
+          font-family:inherit;
+          resize:vertical;
+          outline:none;
+          line-height:1.6;
+          box-sizing:border-box;
+          margin-bottom:12px;
+        ' placeholder='Listing description will appear here...'></textarea>
+
+        <!-- Photo selection -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 4px'>
+          Photos <span style='font-weight:400;color:#9ca3af'>(tap to select — up to 20)</span>
+        </p>
+        <p style='font-size:11px;color:#6b7280;margin:0 0 8px'>
+          First 20 selected by default
+        </p>
+        <div id='mpPhotoGrid' style='
+          display:grid;
+          grid-template-columns:repeat(4,1fr);
+          gap:3px;
+          margin-bottom:12px;
+        '></div>
+
+      </div>
+
+      <!-- Footer -->
+      <div style='
+        display:flex;
+        gap:8px;
+        padding-top:12px;
+        border-top:1px solid #f3f4f6;
+      '>
+        <div style='flex:1;align-self:center'>
+          <span style='font-size:16px;font-weight:700;color:#1877f2' id='mpSelectedCount'>0</span>
+          <span style='font-size:12px;font-weight:600;color:#374151'> / 20 photos</span>
+        </div>
+        <button class='btn-secondary' id='closeMarketplaceModal2'>Cancel</button>
+        <button class='btn-primary' id='mpPostBtn'>🏪 Open Marketplace</button>
       </div>
 
     </div>

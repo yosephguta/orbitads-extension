@@ -354,53 +354,12 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   // Post to Marketplace button
   const postFbBtn = e.target.closest(".post-marketplace-btn");
   if (postFbBtn && !postFbBtn.disabled) {
+    e.stopPropagation();
     const jobId = postFbBtn.dataset.jobId;
-    if (fbGeneratingJobs.has(jobId)) return;
-
-    fbGeneratingJobs.add(jobId);
-    renderQueue(); // re-render immediately to show loading state
-
-    (async () => {
-      try {
-        const { queue = [], token } = await chrome.storage.local.get(["queue", "token"]);
-        const job = queue.find(j => j.id === jobId);
-        if (!job) return;
-
-        const v = job.vehicle;
-        const resp = await apiFetch(`${API_BASE}/listings/generate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-          body: JSON.stringify({
-            year: v.year, make: v.make, model: v.model, trim: v.trim,
-            price: v.price, mileage: v.mileage, vin: v.vin, listing_url: v.listing_url,
-          }),
-        });
-        if (!resp.ok) throw new Error("Failed to generate listing");
-        const listing = await resp.json();
-
-        await chrome.storage.local.set({
-          fb_listing: {
-            ...listing,
-            vehicle: v,
-            reviewed_photos: v.photos_for_video || [],
-            video_url: job.result_url || null,
-            created_at: new Date().toISOString(),
-          }
-        });
-
-        showFbListingScreen(listing, v);
-        chrome.runtime.sendMessage({
-          type: "MARK_LISTING_POSTED",
-          vehicle: v,
-          listing_url: v.listing_url,
-        });
-      } catch (err) {
-        if (err.message !== "session_expired") console.error("OrbitAds: Post to FB failed:", err);
-      } finally {
-        fbGeneratingJobs.delete(jobId);
-        renderQueue();
-      }
-    })();
+    const { queue = [] } = await chrome.storage.local.get("queue");
+    const job = queue.find(j => j.id === jobId);
+    if (!job) return;
+    openMarketplaceModal(job);
     return;
   }
 
@@ -901,8 +860,204 @@ document.querySelectorAll('.fb-caption-theme-btn').forEach(btn => {
   });
 });
 
+// ── Marketplace Modal ─────────────────────────────────────────
+let mpModalJob       = null;
+let mpSelectedPhotos = new Set();
+let mpCurrentTheme   = 'value';
+
+function openMarketplaceModal(job) {
+  mpModalJob       = job;
+  mpSelectedPhotos = new Set();
+  mpCurrentTheme   = 'value';
+
+  const modal = document.getElementById('marketplaceModal');
+  if (!modal) return;
+
+  const allPhotos      = job.vehicle.photos || [];
+  const photosForVideo = job.vehicle.photos_for_video || [];
+  const ordered        = [
+    ...photosForVideo,
+    ...allPhotos.filter(p => !photosForVideo.includes(p)),
+  ];
+
+  ordered.slice(0, 20).forEach(url => mpSelectedPhotos.add(url));
+
+  const grid = document.getElementById('mpPhotoGrid');
+  if (grid) {
+    grid.innerHTML = ordered.map((url, i) => {
+      const isSelected = mpSelectedPhotos.has(url);
+      return `<div class='fb-post-photo ${isSelected ? 'selected' : ''}'
+                   data-url='${url}' data-mp-index='${i}'>
+                <img src='${url}' loading='lazy' alt='Photo ${i + 1}'>
+                <div class='photo-check'>✓</div>
+                <div class='photo-num'>${isSelected ? i + 1 : ''}</div>
+              </div>`;
+    }).join('');
+
+    grid.querySelectorAll('.fb-post-photo').forEach(photo => {
+      photo.addEventListener('click', () => {
+        const url = photo.dataset.url;
+        if (mpSelectedPhotos.has(url)) {
+          mpSelectedPhotos.delete(url);
+        } else {
+          if (mpSelectedPhotos.size >= 20) return;
+          mpSelectedPhotos.add(url);
+        }
+        updateMpSelectionUI();
+      });
+    });
+  }
+
+  document.querySelectorAll('.mp-theme-btn').forEach(btn => {
+    btn.classList.toggle('selected', btn.dataset.theme === 'value');
+  });
+
+  updateMpSelectionUI();
+
+  const descEl = document.getElementById('mpDescription');
+  if (descEl) descEl.value = '';
+
+  modal.style.display = 'flex';
+
+  generateMarketplaceDescription('value');
+}
+
+function updateMpSelectionUI() {
+  const countEl = document.getElementById('mpSelectedCount');
+  if (countEl) countEl.textContent = mpSelectedPhotos.size;
+
+  let selIndex = 1;
+  document.querySelectorAll('#mpPhotoGrid .fb-post-photo').forEach(photo => {
+    const url   = photo.dataset.url;
+    const numEl = photo.querySelector('.photo-num');
+    if (mpSelectedPhotos.has(url)) {
+      photo.classList.add('selected');
+      if (numEl) numEl.textContent = selIndex++;
+    } else {
+      photo.classList.remove('selected');
+      if (numEl) numEl.textContent = '';
+    }
+  });
+}
+
+async function generateMarketplaceDescription(theme) {
+  if (!mpModalJob) return;
+
+  const loadingEl = document.getElementById('mpCaptionLoading');
+  const descEl    = document.getElementById('mpDescription');
+
+  if (loadingEl) loadingEl.style.display = 'block';
+  if (descEl)    descEl.style.display    = 'none';
+
+  try {
+    const { token } = await chrome.storage.local.get('token');
+    const v          = mpModalJob.vehicle;
+
+    const resp = await fetch(`${API_BASE}/listings/generate`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        year:        v.year,
+        make:        v.make,
+        model:       v.model,
+        trim:        v.trim,
+        price:       v.advertised_price || v.price,
+        mileage:     v.mileage,
+        vin:         v.vin,
+        listing_url: v.listing_url,
+        theme:       theme,
+      }),
+    });
+
+    if (!resp.ok) throw new Error('Failed');
+    const data = await resp.json();
+    if (descEl) descEl.value = data.description || '';
+
+  } catch (err) {
+    console.error('OrbitAds: MP description generation failed:', err);
+    if (descEl) {
+      const v     = mpModalJob.vehicle;
+      const title = [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ');
+      descEl.value = `${title}\n${v.advertised_price || v.price || ''} · ${v.mileage || ''}\n\nDM me for more info!`;
+    }
+  } finally {
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (descEl)    descEl.style.display    = 'block';
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
+  // Marketplace modal close handlers
+  document.getElementById('closeMarketplaceModal').onclick = () => {
+    document.getElementById('marketplaceModal').style.display = 'none';
+    mpModalJob = null;
+  };
+  document.getElementById('closeMarketplaceModal2').onclick = () => {
+    document.getElementById('marketplaceModal').style.display = 'none';
+    mpModalJob = null;
+  };
+
+  // Marketplace theme buttons
+  document.querySelectorAll('.mp-theme-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      mpCurrentTheme = btn.dataset.theme;
+      document.querySelectorAll('.mp-theme-btn').forEach(b =>
+        b.classList.toggle('selected', b === btn)
+      );
+      generateMarketplaceDescription(mpCurrentTheme);
+    });
+  });
+
+  // Marketplace submit
+  document.getElementById('mpPostBtn')?.addEventListener('click', async () => {
+    if (!mpModalJob) return;
+
+    const selectedPhotos = Array.from(mpSelectedPhotos);
+    if (selectedPhotos.length === 0) {
+      alert('Please select at least one photo.');
+      return;
+    }
+
+    const mpPostBtn    = document.getElementById('mpPostBtn');
+    const description  = document.getElementById('mpDescription')?.value || '';
+    const originalText = mpPostBtn.textContent;
+
+    mpPostBtn.textContent = '⏳ Opening Marketplace...';
+    mpPostBtn.disabled    = true;
+
+    try {
+      const v = mpModalJob.vehicle;
+
+      await chrome.storage.local.set({
+        fb_listing: {
+          title:           [v.year, v.make, v.model, v.trim].filter(Boolean).join(' '),
+          description:     description,
+          price:           v.advertised_price || v.price || '',
+          vehicle:         v,
+          reviewed_photos: selectedPhotos,
+          video_url:       mpModalJob.result_url || null,
+          created_at:      new Date().toISOString(),
+        }
+      });
+
+      document.getElementById('marketplaceModal').style.display = 'none';
+      mpModalJob = null;
+
+      await chrome.tabs.create({ url: 'https://www.facebook.com/marketplace/create/vehicle' });
+
+    } catch (err) {
+      console.error('OrbitAds: Marketplace post error:', err);
+      alert('Failed to open Marketplace. Please try again.');
+    } finally {
+      mpPostBtn.textContent = originalText;
+      mpPostBtn.disabled    = false;
+    }
+  });
+
   // FB Post modal close handlers
   document.getElementById("closeFbPostModal").onclick = () => {
     document.getElementById("fbPostModal").style.display = "none";
@@ -1385,16 +1540,14 @@ function renderUnifiedCard(card) {
       progressBar = `<div class="progress-wrap">
                        <div class="progress-bar done" style="width:100%"></div>
                      </div>`;
-      const fbLoading = fbGeneratingJobs.has(job.id);
       actionBtn = `<div class="job-actions">
                      ${job.result_url
           ? `<a href="${job.result_url}" target="_blank" class="btn-small">▶ View Ad</a>`
           : ""}
                      <button class="btn-small post-marketplace-btn"
                              data-job-id="${job.id}"
-                             style="background:#1877f2;opacity:${fbLoading ? '0.7' : '1'}"
-                             ${fbLoading ? 'disabled' : ''}>
-                       ${fbLoading ? '⏳ Generating listing...' : '🏪 Marketplace'}
+                             style="background:#1877f2">
+                       🏪 Marketplace
                      </button>
                      <button class='btn-small post-fb-post-btn'
                              data-job-id='${job.id}'

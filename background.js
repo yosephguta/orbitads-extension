@@ -233,15 +233,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "ADD_TO_FB_QUEUE") {
-    addToFbQueue(message.listing, message.vehicle)
-      .then(() => sendResponse({ success: true }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-
-  if (message.type === "FB_POSTED_CONFIRM") {
-    confirmFbPosted(message.listing_id)
-      .then(() => sendResponse({ success: true }));
+    (async () => {
+      const { listing, vehicle } = message;
+      await chrome.storage.local.set({
+        fb_listing: {
+          ...listing,
+          vehicle:    vehicle,
+          created_at: new Date().toISOString(),
+        }
+      });
+      chrome.tabs.create({ url: "https://www.facebook.com/marketplace/create/vehicle" });
+      sendResponse({ success: true });
+    })().catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
@@ -965,171 +968,6 @@ async function realProcessing(job, queue) {
       throw new Error(pollData.error_message || "Pipeline failed.");
     }
   }
-}
-
-// ── Facebook posting queue ────────────────────────────────────
-const FB_MIN_GAP_MS = 7 * 60 * 1000;   // 7 minutes minimum
-const FB_MAX_GAP_MS = 12 * 60 * 1000;  // 12 minutes maximum
-const FB_MAX_PER_DAY = 10;
-
-
-async function addToFbQueue(listing, vehicle) {
-  const { fb_post_queue = [], fb_posting_history = [] } =
-    await chrome.storage.local.get(["fb_post_queue", "fb_posting_history"]);
-
-  // Check daily limit
-  const today = new Date().toDateString();
-  const todayPosts = fb_posting_history.filter(
-    p => new Date(p.timestamp).toDateString() === today
-  ).length;
-
-  if (todayPosts >= FB_MAX_PER_DAY) {
-    console.log("OrbitAds: Daily Facebook posting limit reached");
-    return;
-  }
-
-  const item = {
-    id: Date.now().toString(),
-    listing: listing,
-    vehicle: vehicle,
-    status: "waiting",
-    added_at: new Date().toISOString(),
-    post_after: calculateNextPostTime(fb_post_queue, fb_posting_history),
-  };
-
-  fb_post_queue.push(item);
-  await chrome.storage.local.set({ fb_post_queue });
-
-  console.log(`OrbitAds FB Queue: Added ${vehicle.year} ${vehicle.make} ${vehicle.model}. Post after: ${new Date(item.post_after).toLocaleTimeString()}`);
-
-  // Open Facebook now if this is the first item and it's ready
-  processFbQueue();
-}
-
-function calculateNextPostTime(queue, history) {
-  const now = Date.now();
-
-  // Find last post time from either queue or history
-  const lastFromQueue = queue.filter(j => j.status === "posted")
-    .map(j => new Date(j.posted_at).getTime())
-    .sort((a, b) => b - a)[0];
-
-  const lastFromHistory = history
-    .map(h => new Date(h.timestamp).getTime())
-    .sort((a, b) => b - a)[0];
-
-  const lastPost = Math.max(lastFromQueue || 0, lastFromHistory || 0);
-
-  if (!lastPost || now - lastPost > FB_MAX_GAP_MS) {
-    // No recent posts — can post now (with small delay)
-    return now + 3000;
-  }
-
-  // Calculate random gap between 7-12 minutes from last post
-  const gap = FB_MIN_GAP_MS + Math.random() * (FB_MAX_GAP_MS - FB_MIN_GAP_MS);
-  const postTime = lastPost + gap;
-
-  return Math.max(postTime, now + 3000);
-}
-
-async function processFbQueue() {
-  const { fb_post_queue = [], queue = [] } =
-    await chrome.storage.local.get(["fb_post_queue", "queue"]);
-  const now = Date.now();
-
-  // Reset items stuck in "posting" for more than 5 minutes (tab was closed without confirming)
-  const STUCK_TIMEOUT_MS = 5 * 60 * 1000;
-  let changed = false;
-  fb_post_queue.forEach(j => {
-    if (j.status === "posting" && now - new Date(j.added_at).getTime() > STUCK_TIMEOUT_MS) {
-      j.status = "waiting";
-      j.post_after = now + 3000;
-      changed = true;
-    }
-  });
-  if (changed) await chrome.storage.local.set({ fb_post_queue });
-
-  const nextItem = fb_post_queue.find(
-    j => j.status === "waiting" && new Date(j.post_after).getTime() <= now
-  );
-
-  if (!nextItem) {
-    // Schedule check for when next item is ready
-    const nextReady = fb_post_queue
-      .filter(j => j.status === "waiting")
-      .map(j => new Date(j.post_after).getTime())
-      .sort((a, b) => a - b)[0];
-
-    if (nextReady) {
-      const delay = nextReady - now + 1000;
-      console.log(`OrbitAds FB: Next post in ${Math.round(delay / 60000)} minutes`);
-      setTimeout(processFbQueue, delay);
-    }
-    return;
-  }
-
-  // Mark as posting
-  nextItem.status = "posting";
-  await chrome.storage.local.set({ fb_post_queue });
-
-  // Find the video URL from the generation queue
-  const v = nextItem.vehicle;
-  const completedJob = queue.find(j =>
-    j.status === "completed" && (
-      (v.vin && j.vehicle?.vin === v.vin) ||
-      (j.vehicle?.model === v.model && j.vehicle?.year === v.year)
-    )
-  );
-  const videoUrl = completedJob?.result_url || nextItem.listing?.video_url || null;
-  console.log("OrbitAds FB: video_url for upload:", videoUrl);
-
-  await chrome.storage.local.set({
-    fb_listing: {
-      ...nextItem.listing,
-      vehicle: nextItem.vehicle,
-      reviewed_photos: nextItem.listing?.reviewed_photos || v.photos_for_video || [],
-      video_url: videoUrl,
-      queue_item_id: nextItem.id,
-      created_at: new Date().toISOString(),
-    }
-  });
-
-  chrome.tabs.create({
-    url: "https://www.facebook.com/marketplace/create/vehicle",
-  });
-
-  console.log(`OrbitAds FB: Opening Facebook for ${nextItem.vehicle.year} ${nextItem.vehicle.make} ${nextItem.vehicle.model}`);
-}
-
-async function confirmFbPosted(queueItemId) {
-  const { fb_post_queue = [], fb_posting_history = [] } =
-    await chrome.storage.local.get(["fb_post_queue", "fb_posting_history"]);
-
-  const item = fb_post_queue.find(j => j.id === queueItemId);
-  if (item) {
-    item.status = "posted";
-    item.posted_at = new Date().toISOString();
-  }
-
-  // Add to history for rate limiting
-  fb_posting_history.push({
-    timestamp: new Date().toISOString(),
-    vin: item?.vehicle?.vin,
-  });
-
-  // Keep only last 30 days of history
-  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const cleanHistory = fb_posting_history.filter(
-    h => new Date(h.timestamp).getTime() > cutoff
-  );
-
-  await chrome.storage.local.set({
-    fb_post_queue: fb_post_queue,
-    fb_posting_history: cleanHistory,
-  });
-
-  // Process next item in queue
-  setTimeout(processFbQueue, 1000);
 }
 
 // ── Sold indicators (generic + per-dealership) ────────────────

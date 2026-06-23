@@ -480,7 +480,6 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   }
 });
 
-settingsBtn?.addEventListener("click", () => showScreen(settingsScreen));
 settingsBackBtn?.addEventListener("click", () => showScreen(dashboardScreen));
 helpBtn?.addEventListener("click", () => {
   chrome.tabs.create({ url: "https://dealersorbit.com/help" });
@@ -504,17 +503,17 @@ async function showSettingsScreen() {
   if (user) {
     document.getElementById("settingsEmail").textContent = user.email || "";
     document.getElementById("settingsDealership").textContent = user.dealership_name || "";
-    document.getElementById("voiceIdInput").value = user.elevenlabs_voice_id || "";
+    document.getElementById("phoneInput").value = user.phone_number || "";
   }
   showScreen(settingsScreen);
   loadOutroSettings();
+  loadVoiceSettings();
 }
 
 settingsBtn?.addEventListener("click", showSettingsScreen);
 
 document.getElementById("saveSettingsBtn")?.addEventListener("click", async () => {
   const { token } = await chrome.storage.local.get("token");
-  const voiceId = document.getElementById("voiceIdInput").value.trim();
   const phone = document.getElementById("phoneInput")?.value.trim();
 
   const resp = await apiFetch(`${API_BASE}/auth/me`, {
@@ -524,7 +523,6 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
       "Authorization": `Bearer ${token}`,
     },
     body: JSON.stringify({
-      elevenlabs_voice_id: voiceId || null,
       phone_number: phone || null,
     }),
   });
@@ -539,6 +537,198 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
   }
 });
 
+
+document.getElementById("saveVoiceBtn")?.addEventListener("click", async () => {
+  const saveBtn  = document.getElementById("saveVoiceBtn");
+  const savedMsg = document.getElementById("voiceSaved");
+
+  const voiceIdToSave = selectedVoiceId;
+  if (!voiceIdToSave) {
+    alert("Please select a voice or enter your voice ID.");
+    return;
+  }
+
+  saveBtn.disabled    = true;
+  saveBtn.textContent = "Saving...";
+
+  try {
+    const { token } = await chrome.storage.local.get("token");
+    const resp = await apiFetch(`${API_BASE}/auth/me`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({ elevenlabs_voice_id: voiceIdToSave }),
+    });
+
+    if (!resp.ok) throw new Error("Save failed");
+
+    const updated = await resp.json();
+    await chrome.storage.local.set({ user: updated });
+
+    // Persist custom voice ID locally so it stays in the dropdown
+    // even if the user later switches to a preloaded voice
+    if (!PRELOADED_VOICES.find(v => v.id === voiceIdToSave)) {
+      customVoiceId = voiceIdToSave;
+      await chrome.storage.local.set({ custom_voice_id: voiceIdToSave });
+    }
+
+    if (savedMsg) {
+      savedMsg.style.display = "block";
+      setTimeout(() => { savedMsg.style.display = "none"; }, 2000);
+    }
+
+    renderVoiceList();
+  } catch (err) {
+    alert("Failed to save. Please try again.");
+  } finally {
+    saveBtn.disabled    = false;
+    saveBtn.textContent = "Save Voice Settings";
+  }
+});
+
+document.getElementById("voiceIdInput")?.addEventListener("input", (e) => {
+  const val      = e.target.value.trim();
+  const statusEl = document.getElementById("myVoiceStatus");
+  if (val) {
+    customVoiceId   = val;
+    selectedVoiceId = val;
+    if (statusEl) statusEl.style.display = "block";
+    renderVoiceList();
+  } else {
+    customVoiceId = null;
+    // Revert selection to Brian default if nothing else is selected
+    if (!PRELOADED_VOICES.find(v => v.id === selectedVoiceId)) {
+      selectedVoiceId = 'Gubgw9l4dtIoQA9YZHgx';
+    }
+    if (statusEl) statusEl.style.display = "none";
+    renderVoiceList();
+  }
+});
+
+// ── Voice settings ────────────────────────────────────────────
+let selectedVoiceId  = 'Gubgw9l4dtIoQA9YZHgx'; // Brian default
+let customVoiceId    = null;                     // user's cloned voice ID, persisted separately
+let voicePreviewUrls = {};
+let currentAudio     = null;
+
+const PRELOADED_VOICES = [
+  { id: 'Gubgw9l4dtIoQA9YZHgx', name: 'Brian',   desc: 'Deep and Comforting',    default: true },
+  { id: 'onwK4e9ZLuTAKqWW03F9', name: 'Daniel',  desc: 'Steady Broadcaster' },
+  { id: 'FGY2WhTYpPnrIDTdsKH5', name: 'Laura',   desc: 'Narration Voice' },
+  { id: 'OYTbf65OHHFELVut7v2H', name: 'Hope',    desc: 'Natural and Clear' },
+  { id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam',    desc: 'Engaging and Firm' },
+  { id: 'cjVigY5qzO86Huf0OWal', name: 'Eric',    desc: 'Smooth, Trustworthy' },
+  { id: 'TX3LPaxmHKxFdv7VOQHJ', name: 'Liam',    desc: 'Energetic' },
+  { id: 'JBFqnCBsd6RMkjVDRZzb', name: 'George',  desc: 'Warm, Captivating' },
+  { id: 'IKne3meq5aSn9XLyUdCD', name: 'Charlie', desc: 'Deep and Confident' },
+  { id: 'bIHbv24MWmeRgasZH58o', name: 'Will',    desc: 'Relaxed Optimist' },
+  { id: 'pqHfZKP75CvOlQylNhV4', name: 'Bill',    desc: 'Wise and Mature' },
+  { id: 'iP95p4xoKVk53GoZ742B', name: 'Chris',   desc: 'Charming, Down-to-Earth' },
+];
+
+async function loadVoiceSettings() {
+  const { token, user, custom_voice_id } = await chrome.storage.local.get(['token', 'user', 'custom_voice_id']);
+  if (!token) return;
+
+  selectedVoiceId = user?.elevenlabs_voice_id || 'Gubgw9l4dtIoQA9YZHgx';
+
+  // customVoiceId: prefer locally stored one so it survives switching to a preloaded voice
+  const savedIsCustom = selectedVoiceId && !PRELOADED_VOICES.find(v => v.id === selectedVoiceId);
+  customVoiceId = savedIsCustom ? selectedVoiceId : (custom_voice_id || null);
+
+  try {
+    const resp = await apiFetch(`${API_BASE}/auth/voices/preloaded`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (resp.ok) {
+      const data       = await resp.json();
+      voicePreviewUrls = data.preview_urls || {};
+    }
+  } catch (err) {
+    console.log('Could not load voice previews:', err);
+  }
+
+  renderVoiceList();
+}
+
+function renderVoiceList() {
+  const container = document.getElementById('voiceDropdownContainer');
+  if (!container) return;
+
+  // Build select options
+  let options = PRELOADED_VOICES.map(v =>
+    `<option value="${v.id}" ${selectedVoiceId === v.id ? 'selected' : ''}>${v.name} — ${v.desc}</option>`
+  ).join('');
+
+  if (customVoiceId) {
+    options += `<option value="${customVoiceId}" ${selectedVoiceId === customVoiceId ? 'selected' : ''}>🎤 My Voice — Your cloned voice</option>`;
+  }
+
+  container.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="voiceSelect" style="flex:1;font-size:13px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;background:white;color:#111827;cursor:pointer">
+        ${options}
+      </select>
+      <button id="voicePreviewBtn" title="Preview selected voice"
+              style="flex-shrink:0;background:none;border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;color:#6b7280;transition:color 0.15s,border-color 0.15s">▶️</button>
+    </div>`;
+
+  const select = container.querySelector('#voiceSelect');
+  const previewBtn = container.querySelector('#voicePreviewBtn');
+
+  select.addEventListener('change', () => {
+    selectedVoiceId = select.value;
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+      previewBtn.textContent = '▶️';
+    }
+  });
+
+  previewBtn.addEventListener('click', () => {
+    const previewUrl = voicePreviewUrls[selectedVoiceId];
+
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
+      previewBtn.textContent = '▶️';
+      previewBtn.classList.remove('playing');
+      if (!previewUrl) return;
+    }
+
+    if (!previewUrl) return;
+
+    previewBtn.textContent = '⏸️';
+    previewBtn.classList.add('playing');
+    previewBtn.style.color = '#1a56db';
+    previewBtn.style.borderColor = '#1a56db';
+
+    currentAudio = new Audio(previewUrl);
+    currentAudio.play();
+    currentAudio.onended = () => {
+      previewBtn.textContent = '▶️';
+      previewBtn.classList.remove('playing');
+      previewBtn.style.color = '#6b7280';
+      previewBtn.style.borderColor = '#d1d5db';
+      currentAudio = null;
+    };
+    currentAudio.onerror = () => {
+      previewBtn.textContent = '▶️';
+      previewBtn.classList.remove('playing');
+      previewBtn.style.color = '#6b7280';
+      previewBtn.style.borderColor = '#d1d5db';
+      currentAudio = null;
+    };
+  });
+
+  // Keep own-voice input in sync with customVoiceId
+  const voiceIdInput = document.getElementById('voiceIdInput');
+  const statusEl     = document.getElementById('myVoiceStatus');
+  if (voiceIdInput) voiceIdInput.value = customVoiceId || '';
+  if (statusEl) statusEl.style.display = customVoiceId ? 'block' : 'none';
+}
 
 // ── Outro settings ────────────────────────────────────────────
 async function loadOutroSettings() {

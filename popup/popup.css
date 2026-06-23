@@ -1584,3 +1584,73 @@ body {
 .toggle-switch input:checked + .toggle-slider:before {
   transform: translateX(20px);
 }
+/* ── Voice selector ────────────────────────────────────────── */
+.voice-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: white;
+}
+
+.voice-option:hover {
+  border-color: #93c5fd;
+  background: #f8faff;
+}
+
+.voice-option.selected {
+  border-color: #1a56db;
+  background: #eff6ff;
+}
+
+.voice-option-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-option-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.voice-option-desc {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 1px;
+}
+
+.voice-preview-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  color: #6b7280;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.voice-preview-btn:hover { color: #1a56db; }
+.voice-preview-btn.playing { color: #1a56db; animation: pulse 1s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+.voice-my-voice {
+  border-color: #a855f7;
+  background: #faf5ff;
+}
+
+.voice-my-voice.selected {
+  border-color: #7c3aed;
+  background: #f3e8ff;
+}

@@ -320,11 +320,47 @@
     </div>
 
     <div class="settings-section">
-      <div class="settings-section-title">Voice</div>
+      <div class="settings-section-title">Voice Settings</div>
+
+      <!-- Preloaded voice dropdown -->
       <div class="form-group">
-        <label>My Voice ID <span style="font-weight:400;color:#9ca3af">(ElevenLabs)</span></label>
-        <input type="text" id="voiceIdInput" placeholder="Paste your voice ID here">
+        <label>Select Voice</label>
+        <div id="voiceDropdownContainer">
+          <div style="color:#9ca3af;font-size:12px">Loading voices...</div>
+        </div>
       </div>
+
+      <!-- Divider -->
+      <div style="display:flex;align-items:center;gap:8px;margin:12px 0">
+        <div style="flex:1;height:1px;background:#e5e7eb"></div>
+        <span style="font-size:11px;color:#9ca3af;white-space:nowrap">OR USE YOUR OWN VOICE</span>
+        <div style="flex:1;height:1px;background:#e5e7eb"></div>
+      </div>
+
+      <!-- Own voice section -->
+      <div class="form-group">
+        <label>My Voice (ElevenLabs Clone)</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="voiceIdInput"
+                 placeholder="Your ElevenLabs voice ID"
+                 style="flex:1;font-size:12px">
+          <div id="myVoiceStatus" style="display:none;color:#16a34a;font-size:18px">✓</div>
+        </div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:4px">
+          Don't have a cloned voice?
+          <a href="https://dealersorbit.com/voice-setup" target="_blank"
+             style="color:#1a56db;text-decoration:none;font-weight:600">
+            Create your voice →
+          </a>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="saveVoiceBtn">Save Voice Settings</button>
+      <div class="settings-saved" id="voiceSaved" style="display:none">✓ Saved</div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Contact</div>
       <div class="form-group">
         <label>Phone Number <span style="font-weight:400;color:#9ca3af">(optional — shown in ads)</span></label>
         <input type="tel" id="phoneInput" placeholder="(410) 555-0100">

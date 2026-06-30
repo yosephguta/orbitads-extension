@@ -56,7 +56,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["icons/*", "popup/*", "dealership_configs.js"],
+      "resources": ["icons/*", "popup/*", "dealership_config.js"],
       "matches":   ["*://*/*"]
     }
   ]

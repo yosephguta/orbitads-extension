@@ -1470,6 +1470,10 @@ clearDoneBtn.addEventListener("click", async () => {
 });
 
 async function updateDashboardStats(queue) {
+  // If backend listings have already populated the stats, don't overwrite with stale queue data.
+  // The local queue doesn't track fb_posted, so letting it run would always show 0 for that counter.
+  if (statsFromBackend) return;
+
   const today = new Date().toDateString();
   const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const completed = queue.filter(j => j.status === "completed");
@@ -1507,6 +1511,7 @@ async function loadRecentAds() {
   }
 
   // Fallback — show completed jobs from local queue
+  statsFromBackend = false; // allow queue stats to run since backend returned nothing
   const completed = queue.filter(j => j.status === "completed");
   if (completed.length === 0) {
     recentAds.innerHTML = `
@@ -1539,14 +1544,6 @@ async function loadRecentAds() {
       </div>`;
   }).join("");
 
-  // Update stats from local queue
-  const today = new Date().toDateString();
-  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  if (statAdsToday) statAdsToday.textContent =
-    completed.filter(j => new Date(j.added_at).toDateString() === today).length;
-  if (statAdsWeek) statAdsWeek.textContent =
-    completed.filter(j => new Date(j.added_at).getTime() > weekAgo).length;
-  if (statAdsTotal) statAdsTotal.textContent = completed.length;
 }
 
 function renderListings(listings) {
@@ -1580,6 +1577,7 @@ function renderListings(listings) {
       </div>`;
   }).join("");
 
+  statsFromBackend = true;
   if (statAdsTotal) statAdsTotal.textContent = listings.length;
   if (statFbPosted) statFbPosted.textContent = listings.filter(l => l.fb_posted).length;
   const today = new Date().toDateString();
@@ -1591,6 +1589,7 @@ function renderListings(listings) {
 }
 
 let recentAdsLoadCount = 0;
+let statsFromBackend   = false; // once backend listings load, stop queue from overwriting stats
 
 // ── Queue rendering ───────────────────────────────────────────
 async function renderQueue() {

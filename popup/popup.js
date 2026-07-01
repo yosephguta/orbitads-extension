@@ -82,6 +82,7 @@ const statSoldCount = document.getElementById("statSoldCount");
 
 // ── Session helpers ───────────────────────────────────────────
 async function handleSessionExpired() {
+  if (isLoggingIn) return;
   if (queueInterval) { clearInterval(queueInterval); queueInterval = null; }
   await chrome.storage.local.remove(["token", "user"]);
   userInfo.style.display = "none";
@@ -100,7 +101,91 @@ async function apiFetch(url, options = {}) {
   return resp;
 }
 
+// ── Subscription ──────────────────────────────────────────────
+async function checkSubscriptionStatus() {
+  const { token, subscription_cache } =
+    await chrome.storage.local.get(["token", "subscription_cache"]);
+
+  if (!token) return null;
+
+  const ONE_HOUR = 60 * 60 * 1000;
+  if (subscription_cache && Date.now() - subscription_cache.cached_at < ONE_HOUR) {
+    return subscription_cache;
+  }
+
+  try {
+    const resp = await fetch(`${API_BASE}/auth/me`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+
+    if (resp.status === 401) return null;
+    if (!resp.ok) return null;
+
+    const user = await resp.json();
+
+    const cache = {
+      is_blocked:           user.is_blocked || false,
+      subscription_message: user.subscription_message || null,
+      subscription_status:  user.subscription_status,
+      cached_at:            Date.now(),
+    };
+
+    await chrome.storage.local.set({ subscription_cache: cache });
+    return cache;
+
+  } catch (err) {
+    console.error("Subscription check failed:", err);
+    return null;
+  }
+}
+
+function showSubscriptionOverlay(message_type) {
+  const overlay = document.getElementById("subscriptionOverlay");
+  const icon    = document.getElementById("overlayIcon");
+  const title   = document.getElementById("overlayTitle");
+  const message = document.getElementById("overlayMessage");
+
+  if (!overlay) return;
+
+  const content = {
+    trial_expired: {
+      icon:    "⏰",
+      title:   "Your Free Trial Has Ended",
+      message: "Your 14-day free trial has expired. Upgrade to a paid plan to continue generating video ads and posting to Facebook.",
+    },
+    past_due: {
+      icon:    "💳",
+      title:   "Payment Failed",
+      message: "We couldn't process your last payment. Please update your payment method to restore access to OrbitAds.",
+    },
+    cancelled: {
+      icon:    "🔒",
+      title:   "Subscription Cancelled",
+      message: "Your OrbitAds subscription has been cancelled. Reactivate your subscription to continue generating ads.",
+    },
+  };
+
+  const c = content[message_type] || content["cancelled"];
+  if (icon)    icon.textContent    = c.icon;
+  if (title)   title.textContent   = c.title;
+  if (message) message.textContent = c.message;
+
+  overlay.style.display = "flex";
+
+  document.getElementById("settingsBtn")?.addEventListener("click", () => {
+    overlay.style.display = "none";
+  });
+
+  document.getElementById("settingsBackBtn")?.addEventListener("click", async () => {
+    const subStatus = await checkSubscriptionStatus();
+    if (subStatus?.is_blocked) {
+      overlay.style.display = "flex";
+    }
+  });
+}
+
 // ── State ──────────────────────────────────────────────────────
+let isLoggingIn = false;
 let currentFbListing = null;
 let queueInterval = null;
 const fbGeneratingJobs = new Set(); // job IDs currently being processed for FB listing
@@ -492,9 +577,72 @@ signOutBtn?.addEventListener("click", async () => {
     clearInterval(queueInterval);
     queueInterval = null;
   }
-  await chrome.storage.local.remove(["token", "user"]);
+  await chrome.storage.local.remove(["token", "user", "subscription_cache"]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
+});
+
+async function loadTaglineSettings() {
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) return;
+
+  try {
+    const resp = await fetch(`${API_BASE}/auth/me`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!resp.ok) return;
+    const user = await resp.json();
+
+    const lockedDisplay = document.getElementById("lockedTaglineDisplay");
+    const customDisplay = document.getElementById("customTaglineDisplay");
+    const lockedText    = document.getElementById("lockedTaglineText");
+    const customInput   = document.getElementById("customTaglineInput");
+
+    if (user.dealership_required_tagline) {
+      if (lockedDisplay) lockedDisplay.style.display = "block";
+      if (customDisplay) customDisplay.style.display = "none";
+      if (lockedText)    lockedText.textContent = user.dealership_required_tagline;
+    } else {
+      if (lockedDisplay) lockedDisplay.style.display = "none";
+      if (customDisplay) customDisplay.style.display = "block";
+      if (customInput && user.custom_tagline) customInput.value = user.custom_tagline;
+    }
+  } catch (err) {
+    console.error("Could not load tagline settings:", err);
+  }
+}
+
+document.getElementById("saveTaglineBtn")?.addEventListener("click", async () => {
+  const saveBtn  = document.getElementById("saveTaglineBtn");
+  const savedMsg = document.getElementById("taglineSaved");
+  const tagline  = document.getElementById("customTaglineInput")?.value.trim();
+
+  saveBtn.disabled    = true;
+  saveBtn.textContent = "Saving...";
+
+  try {
+    const { token } = await chrome.storage.local.get("token");
+    const resp = await fetch(`${API_BASE}/auth/me`, {
+      method:  "PATCH",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({ custom_tagline: tagline || null }),
+    });
+
+    if (!resp.ok) throw new Error("Save failed");
+
+    if (savedMsg) {
+      savedMsg.style.display = "block";
+      setTimeout(() => savedMsg.style.display = "none", 2000);
+    }
+  } catch (err) {
+    alert("Failed to save tagline. Please try again.");
+  } finally {
+    saveBtn.disabled    = false;
+    saveBtn.textContent = "Save Tagline";
+  }
 });
 
 // Settings screen populate
@@ -508,6 +656,7 @@ async function showSettingsScreen() {
   showScreen(settingsScreen);
   loadOutroSettings();
   loadVoiceSettings();
+  loadTaglineSettings();
 }
 
 settingsBtn?.addEventListener("click", showSettingsScreen);
@@ -1318,18 +1467,41 @@ async function init() {
   await chrome.storage.local.remove("pending_review");
 
   if (token && user) {
-    // Validate token is still accepted by the server.
+    // Validate token and fetch subscription state in a single call.
     // Only logs out on 401 — network errors (offline) keep the session.
     const meResp = await fetch(`${API_BASE}/auth/me`, {
       headers: { "Authorization": `Bearer ${token}` },
     }).catch(() => null);
 
-    if (meResp && meResp.status === 401) {
+    if (meResp && meResp.status === 401 && !isLoggingIn) {
       await handleSessionExpired();
       return;
     }
 
     showLoggedIn(user);
+
+    // Parse the response we already have — no second fetch needed.
+    // Fall back to checkSubscriptionStatus() (cache) if the request failed.
+    let subStatus = null;
+    if (meResp && meResp.ok) {
+      const meData = await meResp.json();
+      subStatus = {
+        is_blocked:           meData.is_blocked || false,
+        subscription_message: meData.subscription_message || null,
+        subscription_status:  meData.subscription_status,
+        cached_at:            Date.now(),
+      };
+      await chrome.storage.local.set({ subscription_cache: subStatus });
+    } else {
+      subStatus = await checkSubscriptionStatus();
+    }
+
+    if (subStatus?.is_blocked) {
+      showScreen(dashboardScreen);
+      showSubscriptionOverlay(subStatus.subscription_message);
+      return;
+    }
+
     renderQueue();
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
@@ -1394,12 +1566,16 @@ function showLoggedIn(user) {
 
 // ── Login ─────────────────────────────────────────────────────
 loginBtn.addEventListener("click", async () => {
+  if (isLoggingIn) return;
+  isLoggingIn = true;
+
   const email = document.getElementById("email").value.trim();
   const password = document.getElementById("password").value;
   loginError.textContent = "";
 
   if (!email || !password) {
     loginError.textContent = "Please enter your email and password.";
+    isLoggingIn = false;
     return;
   }
 
@@ -1442,6 +1618,7 @@ loginBtn.addEventListener("click", async () => {
   } catch (err) {
     loginError.textContent = err.message;
   } finally {
+    isLoggingIn = false;
     loginBtn.textContent = "Sign In";
     loginBtn.disabled = false;
   }
@@ -1597,6 +1774,13 @@ async function renderQueue() {
   if (fbListingScreen?.style.display !== "none") return;
   if (settingsScreen?.style.display !== "none") return;
   if (generateModal?.style.display !== "none") return;
+
+  // Block dashboard if subscription is expired
+  const subStatus = await checkSubscriptionStatus();
+  if (subStatus?.is_blocked) {
+    showSubscriptionOverlay(subStatus.subscription_message);
+    return;
+  }
 
   // Pick up session_expired flag set by background.js
   const { session_expired } = await chrome.storage.local.get("session_expired");
@@ -1840,18 +2024,6 @@ async function showGenerateModal(vehicle) {
   modalStep1.style.display = "block";
   generateModal.style.display = "flex";
 
-  // Disable video options when no voice ID is saved
-  const { user } = await chrome.storage.local.get("user");
-  const hasVoice = !!user?.elevenlabs_voice_id;
-
-  document.querySelectorAll('.modal-option[data-type="slideshow"], .modal-option[data-type="with_outro"]')
-    .forEach(btn => {
-      btn.disabled = !hasVoice;
-      btn.classList.toggle("modal-option-disabled", !hasVoice);
-    });
-
-  const hint = document.getElementById("modalVoiceHint");
-  if (hint) hint.style.display = hasVoice ? "none" : "block";
 }
 
 closeModal?.addEventListener("click", () => {

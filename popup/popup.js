@@ -1654,10 +1654,89 @@ async function init() {
     }
 
     renderQueue();
+    await restartPollingIfNeeded();
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
   } else {
     showScreen(loginScreen);
+  }
+}
+
+async function restartPollingIfNeeded() {
+  const { queue = [] } = await chrome.storage.local.get('queue');
+
+  const activeJob = queue.find(j =>
+    j.status === 'generating' || j.status === 'waiting'
+  );
+
+  if (!activeJob) return;
+
+  console.log('OrbitAds: Found in-progress job on popup open, checking status...');
+
+  const { token } = await chrome.storage.local.get('token');
+  if (!token || !activeJob.api_job_id) return;
+
+  try {
+    const resp = await fetch(`${API_BASE}/jobs/${activeJob.api_job_id}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!resp.ok) return;
+    const pollData = await resp.json();
+
+    console.log('OrbitAds: Backend job status:', pollData.status);
+
+    if (pollData.status === 'completed') {
+      activeJob.status     = 'completed';
+      activeJob.progress   = 100;
+      activeJob.label      = 'Complete!';
+      activeJob.result_url = pollData.final_video_url;
+
+      const updatedQueue = queue.map(j => j.id === activeJob.id ? activeJob : j);
+      await chrome.storage.local.set({ queue: updatedQueue });
+
+      // Save to listing history (best-effort — background.js may have already done this)
+      try {
+        const v = activeJob.vehicle;
+        await fetch(`${API_BASE}/listings/`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            job_id:      activeJob.api_job_id,
+            vin:         v.vin,
+            year:        v.year,
+            make:        v.make,
+            model:       v.model,
+            trim:        v.trim,
+            price:       v.price,
+            mileage:     v.mileage,
+            listing_url: v.listing_url,
+            video_url:   pollData.final_video_url,
+            photo_urls:  JSON.stringify(v.photos_for_video || []),
+          }),
+        });
+      } catch (e) {
+        // ignore — listing may already exist
+      }
+
+      console.log('OrbitAds: Job completed while extension was closed — updated');
+      renderQueue();
+
+    } else if (pollData.status === 'failed') {
+      activeJob.status = 'failed';
+      activeJob.error  = pollData.error_message || 'Pipeline failed';
+
+      const updatedQueue = queue.map(j => j.id === activeJob.id ? activeJob : j);
+      await chrome.storage.local.set({ queue: updatedQueue });
+      renderQueue();
+
+    } else {
+      // Still processing — tell background.js to restart polling
+      console.log('OrbitAds: Job still processing — restarting background poll');
+      chrome.runtime.sendMessage({ type: 'RESTART_POLLING', job_id: activeJob.id });
+    }
+  } catch (err) {
+    console.error('OrbitAds: Status check failed:', err);
   }
 }
 

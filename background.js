@@ -332,6 +332,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'RESTART_POLLING') {
+    (async () => {
+      const { queue = [] } = await chrome.storage.local.get('queue');
+      const job = queue.find(j => j.id === message.job_id);
+      if (job && (job.status === 'generating' || job.status === 'waiting')) {
+        console.log('OrbitAds: Restarting poll for job', job.id);
+        processQueue();
+      }
+      sendResponse({ success: true });
+    })().catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   return true;
 });
 
@@ -367,6 +380,9 @@ function applyPhotoHints(photos, photoHints) {
 // ── Global processing locks ────────────────────────────────
 let isEnriching = false;
 const enrichQueue = [];
+
+// Track which job IDs already have an active resumePolling loop
+const resumingJobIds = new Set();
 
 let isClassifying = false;
 const classifyQueue = [];
@@ -836,8 +852,16 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
 async function processQueue() {
   const { queue = [] } = await chrome.storage.local.get("queue");
 
-  // Only one job generating at a time — check queue status, not a storage flag
-  if (queue.some(j => j.status === "generating")) return;
+  // If a job is in generating state with an api_job_id, the service worker
+  // may have restarted mid-poll — resume polling instead of starting a new job.
+  const generatingJob = queue.find(j => j.status === "generating");
+  if (generatingJob) {
+    if (generatingJob.api_job_id) {
+      console.log('OrbitAds: Resuming poll for job', generatingJob.id);
+      resumePolling(generatingJob, queue);
+    }
+    return;
+  }
 
   const nextJob = queue.find(j => j.status === "waiting");
   if (!nextJob) return;
@@ -889,6 +913,86 @@ async function saveToListingHistory(job, apiJob, token) {
     console.log("OrbitAds: Saved listing to history");
   } catch (err) {
     console.error("OrbitAds: Failed to save listing history:", err);
+  }
+}
+
+async function resumePolling(job, queue) {
+  if (resumingJobIds.has(job.id)) {
+    console.log('OrbitAds: Already resuming poll for job', job.id);
+    return;
+  }
+  resumingJobIds.add(job.id);
+
+  const { token } = await chrome.storage.local.get('token');
+  if (!token) {
+    resumingJobIds.delete(job.id);
+    return;
+  }
+
+  const POLL_INTERVAL = 8000;
+  const MAX_WAIT      = 1200000; // 20 minutes
+  let elapsed         = 0;
+
+  console.log('OrbitAds: Resuming polling for job', job.id, 'api_job_id:', job.api_job_id);
+
+  try {
+    while (elapsed < MAX_WAIT) {
+      await sleep(POLL_INTERVAL);
+      elapsed += POLL_INTERVAL;
+
+      try {
+        const resp = await fetch(`${API_BASE}/jobs/${job.api_job_id}`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (!resp.ok) continue;
+
+        const pollData = await resp.json();
+
+        const statusMap = {
+          'pending':           { progress: 5,   label: 'Starting pipeline...' },
+          'vin_decoding':      { progress: 15,  label: 'Decoding VIN...' },
+          'script_generating': { progress: 35,  label: 'Writing ad script...' },
+          'voice_cloning':     { progress: 55,  label: 'Cloning voice...' },
+          'assembling':        { progress: 80,  label: 'Assembling video...' },
+          'completed':         { progress: 100, label: 'Complete!' },
+          'failed':            { progress: 0,   label: pollData.error_message || 'Failed' },
+        };
+
+        const mapped = statusMap[pollData.status] || { progress: job.progress, label: job.label };
+        job.progress = mapped.progress;
+        job.label    = mapped.label;
+        await saveQueue(queue);
+
+        if (pollData.status === 'completed') {
+          job.result_url = pollData.final_video_url;
+          job.status     = 'completed';
+          job.progress   = 100;
+          job.label      = 'Complete!';
+          await saveQueue(queue);
+          await saveToListingHistory(job, pollData, token);
+          processQueue();
+          return;
+        }
+
+        if (pollData.status === 'failed') {
+          job.status = 'failed';
+          job.error  = pollData.error_message || 'Pipeline failed';
+          await saveQueue(queue);
+          processQueue();
+          return;
+        }
+
+      } catch (err) {
+        console.error('OrbitAds: Resume poll error:', err);
+      }
+    }
+
+    // Timed out
+    job.status = 'failed';
+    job.error  = 'Timed out waiting for video. Check back later.';
+    await saveQueue(queue);
+  } finally {
+    resumingJobIds.delete(job.id);
   }
 }
 

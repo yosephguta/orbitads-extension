@@ -219,6 +219,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       theme:       message.theme        || "family",
       customScript: message.custom_script || null,
       outroVideoId: message.outro_video_id || null,
+      language:    message.language     || 'en',
     });
     drainGenQueueAdditions()
       .then(() => sendResponse({ success: true }))
@@ -779,10 +780,10 @@ async function drainGenQueueAdditions() {
   if (isAddingToGenQueue) return;
   isAddingToGenQueue = true;
   while (genQueueAdditions.length > 0) {
-    const { vehicle, videoType, theme, customScript, outroVideoId } =
+    const { vehicle, videoType, theme, customScript, outroVideoId, language } =
       genQueueAdditions.shift();
     try {
-      await addToQueue(vehicle, videoType, theme, customScript, outroVideoId);
+      await addToQueue(vehicle, videoType, theme, customScript, outroVideoId, language);
     } catch (err) {
       console.error("OrbitAds: addToQueue failed:", err);
     }
@@ -790,7 +791,7 @@ async function drainGenQueueAdditions() {
   isAddingToGenQueue = false;
 }
 
-async function addToQueue(vehicle, videoType = "slideshow", theme = "family", customScript = null, outroVideoId = null) {
+async function addToQueue(vehicle, videoType = "slideshow", theme = "family", customScript = null, outroVideoId = null, language = 'en') {
   const { queue = [], defaultTheme = "family" } =
     await chrome.storage.local.get(["queue", "defaultTheme"]);
 
@@ -818,6 +819,7 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
     status: photosOnly ? "completed" : "waiting",
     custom_script: customScript || null,
     theme: theme,
+    language: language || 'en',
     added_at: new Date().toISOString(),
     progress: photosOnly ? 100 : 0,
     label: photosOnly ? "Photos ready — Post to FB" : "Waiting...",
@@ -915,6 +917,7 @@ async function realProcessing(job, queue) {
       : null,
     custom_script: jobSnapshot.custom_script || null,
     price: v.price || null,
+    language: jobSnapshot.language || 'en',
   };
 
   console.log("OrbitAds: Sending job to backend:", {

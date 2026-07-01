@@ -187,6 +187,7 @@ function showSubscriptionOverlay(message_type) {
 // ── State ──────────────────────────────────────────────────────
 let isLoggingIn = false;
 let currentFbListing = null;
+let userLanguage = 'en';
 let queueInterval = null;
 const fbGeneratingJobs = new Set(); // job IDs currently being processed for FB listing
 let reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
@@ -598,17 +599,86 @@ async function loadTaglineSettings() {
     const lockedText    = document.getElementById("lockedTaglineText");
     const customInput   = document.getElementById("customTaglineInput");
 
-    if (user.dealership_required_tagline) {
+    const isSpanish     = userLanguage === 'es';
+    const lockedTagline = isSpanish
+      ? user.dealership_required_tagline_es
+      : user.dealership_required_tagline;
+    const customTagline = isSpanish
+      ? user.custom_tagline_es
+      : user.custom_tagline;
+
+    if (lockedTagline) {
       if (lockedDisplay) lockedDisplay.style.display = "block";
       if (customDisplay) customDisplay.style.display = "none";
-      if (lockedText)    lockedText.textContent = user.dealership_required_tagline;
+      if (lockedText)    lockedText.textContent = lockedTagline;
     } else {
       if (lockedDisplay) lockedDisplay.style.display = "none";
       if (customDisplay) customDisplay.style.display = "block";
-      if (customInput && user.custom_tagline) customInput.value = user.custom_tagline;
+      if (customInput)   customInput.value = customTagline || '';
+      if (customInput)   customInput.placeholder = isSpanish
+        ? 'ej. Sin cargos adicionales del distribuidor'
+        : 'e.g. No additional dealer fees';
     }
   } catch (err) {
     console.error("Could not load tagline settings:", err);
+  }
+}
+
+async function autoTranslateTagline() {
+  const { token } = await chrome.storage.local.get('token');
+  if (!token) return;
+
+  const meResp = await fetch(`${API_BASE}/auth/me`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+  if (!meResp.ok) return;
+  const user = await meResp.json();
+
+  // Use English tagline as source
+  const englishTagline = user.custom_tagline || user.dealership_required_tagline || '';
+  if (!englishTagline) return;
+
+  // If a Spanish tagline already exists, show it without overwriting
+  const existingEs = user.custom_tagline_es || user.dealership_required_tagline_es;
+
+  const customInput = document.getElementById('customTaglineInput');
+  if (!customInput) return;
+
+  if (existingEs) {
+    customInput.value = existingEs;
+    return;
+  }
+
+  customInput.placeholder = 'Translating...';
+  customInput.disabled    = true;
+
+  try {
+    const resp = await fetch(`${API_BASE}/listings/translate-tagline`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body:    JSON.stringify({ text: englishTagline, target_language: 'es' }),
+    });
+    if (!resp.ok) throw new Error('Translation failed');
+    const data = await resp.json();
+
+    customInput.value = data.translated;
+
+    // Auto-save the translation
+    await fetch(`${API_BASE}/auth/me`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body:    JSON.stringify({ custom_tagline_es: data.translated }),
+    });
+
+    const { user: storedUser = {} } = await chrome.storage.local.get('user');
+    storedUser.custom_tagline_es = data.translated;
+    await chrome.storage.local.set({ user: storedUser });
+
+  } catch (err) {
+    console.error('Auto-translate failed:', err);
+  } finally {
+    customInput.disabled    = false;
+    customInput.placeholder = 'ej. Sin cargos adicionales del distribuidor';
   }
 }
 
@@ -622,13 +692,14 @@ document.getElementById("saveTaglineBtn")?.addEventListener("click", async () =>
 
   try {
     const { token } = await chrome.storage.local.get("token");
+    const taglineField = userLanguage === 'es' ? 'custom_tagline_es' : 'custom_tagline';
     const resp = await fetch(`${API_BASE}/auth/me`, {
       method:  "PATCH",
       headers: {
         "Content-Type":  "application/json",
         "Authorization": `Bearer ${token}`,
       },
-      body: JSON.stringify({ custom_tagline: tagline || null }),
+      body: JSON.stringify({ [taglineField]: tagline || null }),
     });
 
     if (!resp.ok) throw new Error("Save failed");
@@ -654,6 +725,14 @@ async function showSettingsScreen() {
     document.getElementById("phoneInput").value = user.phone_number || "";
   }
   showScreen(settingsScreen);
+  // Sync language buttons to current state
+  document.querySelectorAll('.lang-btn').forEach(b => {
+    const isSelected = b.dataset.lang === userLanguage;
+    b.classList.toggle('selected', isSelected);
+    b.style.borderColor = isSelected ? '#1a56db' : '#e5e7eb';
+    b.style.background  = isSelected ? '#eff6ff' : 'white';
+    b.style.color       = isSelected ? '#1a56db' : '#374151';
+  });
   loadOutroSettings();
   loadVoiceSettings();
   loadTaglineSettings();
@@ -702,13 +781,14 @@ document.getElementById("saveVoiceBtn")?.addEventListener("click", async () => {
 
   try {
     const { token } = await chrome.storage.local.get("token");
+    const voiceField = userLanguage === 'es' ? 'elevenlabs_voice_id_es' : 'elevenlabs_voice_id';
     const resp = await apiFetch(`${API_BASE}/auth/me`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${token}`,
       },
-      body: JSON.stringify({ elevenlabs_voice_id: voiceIdToSave }),
+      body: JSON.stringify({ [voiceField]: voiceIdToSave }),
     });
 
     if (!resp.ok) throw new Error("Save failed");
@@ -716,9 +796,8 @@ document.getElementById("saveVoiceBtn")?.addEventListener("click", async () => {
     const updated = await resp.json();
     await chrome.storage.local.set({ user: updated });
 
-    // Persist custom voice ID locally so it stays in the dropdown
-    // even if the user later switches to a preloaded voice
-    if (!PRELOADED_VOICES.find(v => v.id === voiceIdToSave)) {
+    // Persist custom voice ID locally (English only)
+    if (userLanguage !== 'es' && !PRELOADED_VOICES.find(v => v.id === voiceIdToSave)) {
       customVoiceId = voiceIdToSave;
       await chrome.storage.local.set({ custom_voice_id: voiceIdToSave });
     }
@@ -728,7 +807,8 @@ document.getElementById("saveVoiceBtn")?.addEventListener("click", async () => {
       setTimeout(() => { savedMsg.style.display = "none"; }, 2000);
     }
 
-    renderVoiceList();
+    const voices = userLanguage === 'es' ? SPANISH_VOICES : PRELOADED_VOICES;
+    renderVoiceList(voices, voiceIdToSave);
   } catch (err) {
     alert("Failed to save. Please try again.");
   } finally {
@@ -777,15 +857,36 @@ const PRELOADED_VOICES = [
   { id: 'iP95p4xoKVk53GoZ742B', name: 'Chris',   desc: 'Charming, Down-to-Earth' },
 ];
 
+const SPANISH_VOICES = [
+  { id: 'zDMHo7CPscBTgfDtPOWl', name: 'Claus',     desc: 'Natural Spanish',        default: true },
+  { id: 'G4IAP30yc6c1gK0csDfu', name: 'Juan',      desc: 'Warm and Conversational' },
+  { id: 'k8cFOyAg7B9qwBlDDNTC', name: 'Miguel',    desc: 'Clear and Confident' },
+  { id: '9F4C8ztpNUmXkdDDbz3J', name: 'Dan',       desc: 'Professional' },
+  { id: '8mBRP99B2Ng2QwsJMFQl', name: 'El Faraon', desc: 'Deep and Powerful' },
+  { id: '22VndfJPBU7AZORAZZTT', name: 'Valeria',   desc: 'Bright and Energetic' },
+  { id: 'iqH5zmD4xxyGBHUsZ4Gt', name: 'Lis',       desc: 'Warm and Natural' },
+];
+
 async function loadVoiceSettings() {
   const { token, user, custom_voice_id } = await chrome.storage.local.get(['token', 'user', 'custom_voice_id']);
   if (!token) return;
 
-  selectedVoiceId = user?.elevenlabs_voice_id || 'Gubgw9l4dtIoQA9YZHgx';
+  const isSpanish = userLanguage === 'es';
+  const voices    = isSpanish ? SPANISH_VOICES : PRELOADED_VOICES;
 
-  // customVoiceId: prefer locally stored one so it survives switching to a preloaded voice
-  const savedIsCustom = selectedVoiceId && !PRELOADED_VOICES.find(v => v.id === selectedVoiceId);
-  customVoiceId = savedIsCustom ? selectedVoiceId : (custom_voice_id || null);
+  const currentVoiceId = isSpanish
+    ? (user?.elevenlabs_voice_id_es || 'zDMHo7CPscBTgfDtPOWl')
+    : (user?.elevenlabs_voice_id    || 'Gubgw9l4dtIoQA9YZHgx');
+
+  selectedVoiceId = currentVoiceId;
+
+  // customVoiceId only applies to English (cloned voice)
+  if (!isSpanish) {
+    const savedIsCustom = selectedVoiceId && !PRELOADED_VOICES.find(v => v.id === selectedVoiceId);
+    customVoiceId = savedIsCustom ? selectedVoiceId : (custom_voice_id || null);
+  } else {
+    customVoiceId = null;
+  }
 
   try {
     const resp = await apiFetch(`${API_BASE}/auth/voices/preloaded`, {
@@ -799,29 +900,33 @@ async function loadVoiceSettings() {
     console.log('Could not load voice previews:', err);
   }
 
-  renderVoiceList();
+  renderVoiceList(voices, currentVoiceId);
 }
 
-function renderVoiceList() {
+function renderVoiceList(voices = PRELOADED_VOICES, currentVoiceId = null) {
   const container = document.getElementById('voiceDropdownContainer');
   if (!container) return;
 
+  const activeId = currentVoiceId || selectedVoiceId;
+
   // Build select options
-  let options = PRELOADED_VOICES.map(v =>
-    `<option value="${v.id}" ${selectedVoiceId === v.id ? 'selected' : ''}>${v.name} — ${v.desc}</option>`
+  let options = voices.map(v =>
+    `<option value="${v.id}" ${activeId === v.id ? 'selected' : ''}>${v.name} — ${v.desc}</option>`
   ).join('');
 
-  if (customVoiceId) {
-    options += `<option value="${customVoiceId}" ${selectedVoiceId === customVoiceId ? 'selected' : ''}>🎤 My Voice — Your cloned voice</option>`;
+  if (customVoiceId && userLanguage !== 'es') {
+    options += `<option value="${customVoiceId}" ${activeId === customVoiceId ? 'selected' : ''}>🎤 My Voice — Your cloned voice</option>`;
   }
 
+  const initialHasPreview = !!voicePreviewUrls[activeId];
   container.innerHTML = `
     <div style="display:flex;gap:8px;align-items:center">
       <select id="voiceSelect" style="flex:1;font-size:13px;padding:7px 8px;border:1px solid #d1d5db;border-radius:6px;background:white;color:#111827;cursor:pointer">
         ${options}
       </select>
-      <button id="voicePreviewBtn" title="Preview selected voice"
-              style="flex-shrink:0;background:none;border:1px solid #d1d5db;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;color:#6b7280;transition:color 0.15s,border-color 0.15s">▶️</button>
+      <button id="voicePreviewBtn" title="${initialHasPreview ? 'Preview selected voice' : 'No preview available'}"
+              ${initialHasPreview ? '' : 'disabled'}
+              style="flex-shrink:0;background:none;border:1px solid ${initialHasPreview ? '#d1d5db' : '#e5e7eb'};border-radius:6px;padding:6px 10px;font-size:16px;cursor:${initialHasPreview ? 'pointer' : 'default'};color:${initialHasPreview ? '#6b7280' : '#d1d5db'};transition:color 0.15s,border-color 0.15s">▶️</button>
     </div>`;
 
   const select = container.querySelector('#voiceSelect');
@@ -834,6 +939,12 @@ function renderVoiceList() {
       currentAudio = null;
       previewBtn.textContent = '▶️';
     }
+    const hasPreview = !!voicePreviewUrls[selectedVoiceId];
+    previewBtn.disabled       = !hasPreview;
+    previewBtn.title          = hasPreview ? 'Preview selected voice' : 'No preview available';
+    previewBtn.style.cursor   = hasPreview ? 'pointer' : 'default';
+    previewBtn.style.color    = hasPreview ? '#6b7280' : '#d1d5db';
+    previewBtn.style.borderColor = hasPreview ? '#d1d5db' : '#e5e7eb';
   });
 
   previewBtn.addEventListener('click', () => {
@@ -1145,13 +1256,14 @@ async function generateFbPostCaption(job, theme) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({
-        year:    v.year    || null,
-        make:    v.make    || null,
-        model:   v.model   || null,
-        trim:    v.trim    || null,
-        price:   v.price || null,
-        mileage: v.mileage || null,
+        year:     v.year    || null,
+        make:     v.make    || null,
+        model:    v.model   || null,
+        trim:     v.trim    || null,
+        price:    v.price   || null,
+        mileage:  v.mileage || null,
         theme,
+        language: userLanguage,
       }),
     });
     if (res.ok) {
@@ -1308,6 +1420,7 @@ async function generateMarketplaceDescription(theme) {
         vin:         v.vin,
         listing_url: v.listing_url,
         theme:       theme,
+        language:    userLanguage,
       }),
     });
 
@@ -1330,6 +1443,43 @@ async function generateMarketplaceDescription(theme) {
 
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
+  // ── Language toggle ──────────────────────────────────────────
+  function updateLangBtnUI(lang) {
+    document.querySelectorAll('.lang-btn').forEach(b => {
+      const isSelected = b.dataset.lang === lang;
+      b.classList.toggle('selected', isSelected);
+      b.style.borderColor  = isSelected ? '#1a56db' : '#e5e7eb';
+      b.style.background   = isSelected ? '#eff6ff' : 'white';
+      b.style.color        = isSelected ? '#1a56db' : '#374151';
+    });
+  }
+
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const lang = btn.dataset.lang;
+      userLanguage = lang;
+      updateLangBtnUI(lang);
+
+      const { token } = await chrome.storage.local.get('token');
+      if (!token) return;
+
+      const patchResp = await fetch(`${API_BASE}/auth/me`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body:    JSON.stringify({ preferred_language: lang }),
+      });
+
+      if (patchResp.ok) {
+        const updated = await patchResp.json();
+        await chrome.storage.local.set({ user: updated });
+      }
+
+      await loadVoiceSettings();
+      if (lang === 'es') await autoTranslateTagline();
+      await loadTaglineSettings();
+    });
+  });
+
   // Marketplace modal close handlers
   document.getElementById('closeMarketplaceModal').onclick = () => {
     document.getElementById('marketplaceModal').style.display = 'none';
@@ -1485,6 +1635,7 @@ async function init() {
     let subStatus = null;
     if (meResp && meResp.ok) {
       const meData = await meResp.json();
+      userLanguage = meData.preferred_language || 'en';
       subStatus = {
         is_blocked:           meData.is_blocked || false,
         subscription_message: meData.subscription_message || null,
@@ -2164,6 +2315,7 @@ document.getElementById("previewScriptBtn")?.addEventListener("click", async () 
       body: JSON.stringify({
         vehicle_info: vehicleInfo,
         custom_prompt: prompt,
+        language: userLanguage,
       }),
     });
 
@@ -2224,6 +2376,7 @@ async function generateAdWithOptions(videoType, theme, customScript) {
     custom_script: customScript || null,
     outro_video_id: videoType === "with_outro" ? capturedOutroId : null,
     photos_only: videoType === "photos",
+    language: userLanguage,
   });
 
   // Remove this specific car from the pending review queue.
@@ -3056,6 +3209,7 @@ facebookBtn.addEventListener("click", async () => {
         vin: v.vin,
         dealership_name: v.dealership,
         listing_url: v.listing_url,
+        language: userLanguage,
       }),
     });
 

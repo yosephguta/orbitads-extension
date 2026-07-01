@@ -1,3 +1,10 @@
+/* ── Language toggle ─────────────────────────────────────── */
+.lang-btn.selected {
+  border-color: #1a56db !important;
+  background:   #eff6ff !important;
+  color:        #1a56db !important;
+}
+
 /* ── Reset & base ─────────────────────────────────────────── */
 *,
 *::before,

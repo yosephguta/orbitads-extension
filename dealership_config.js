@@ -1,5 +1,5 @@
 /**
- * OrbitAds Dealership Scraper Configs
+ * DealersOrbit Dealership Scraper Configs
  * ─────────────────────────────────────
  * Each config defines how to scrape vehicle data from a specific
  * dealership website or website provider.

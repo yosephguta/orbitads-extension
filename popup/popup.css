@@ -44,12 +44,18 @@ body {
   letter-spacing: -0.5px;
 }
 
-.logo-orbit {
+.logo-dealers {
+  font-size: 20px;
+  font-weight: 800;
   color: #ffffff;
+  letter-spacing: -0.5px;
 }
 
-.logo-ads {
+.logo-orbit {
+  font-size: 20px;
+  font-weight: 800;
   color: #93c5fd;
+  letter-spacing: -0.5px;
 }
 
 .header-actions {

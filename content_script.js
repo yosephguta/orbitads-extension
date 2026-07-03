@@ -1,20 +1,20 @@
 
 /**
- * OrbitAds Content Script
+ * DealersOrbit Content Script
  * ────────────────────────
  * Injected into vehicle listing pages by Chrome.
  * 
  * Responsibilities:
  *   1. Detect if this is a vehicle listing page
  *   2. Find car cards on inventory pages
- *   3. Inject "Import to OrbitAds" buttons
+ *   3. Inject "Import to DealersOrbit" buttons
  *   4. Scrape vehicle data when button is clicked
  *   5. Send data to background.js for queue processing
  */
 
 // ── Constants ─────────────────────────────────────────────────
-const BUTTON_CLASS = "orbitads-import-btn";
-const INJECTED_ATTR = "data-orbitads-injected";
+const BUTTON_CLASS = "dealersorbit-import-btn";
+const INJECTED_ATTR = "data-dealersorbit-injected";
 const BRAND_COLOR = "#1a56db";
 const BRAND_COLOR_HOV = "#1e40af";
 
@@ -532,13 +532,13 @@ function getLargestVariant(url) {
 
 // ── Button injection ──────────────────────────────────────────
 /**
- * Create the Import to OrbitAds button.
+ * Create the Import to DealersOrbit button.
  */
 function createImportButton(vehicleData) {
   const btn = document.createElement("button");
   btn.className = BUTTON_CLASS;
-  btn.textContent = "⊕ Import to OrbitAds";
-  btn.title = "Add this vehicle to OrbitAds ad generation queue";
+  btn.textContent = "⊕ Import to DealersOrbit";
+  btn.title = "Add this vehicle to DealersOrbit ad generation queue";
 
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
@@ -554,7 +554,7 @@ function createImportButton(vehicleData) {
       btn.style.background = "#dc2626";
       btn.title = "Import timed out. Reload the page and try again.";
       btn.onclick = () => window.location.reload();
-      console.log("OrbitAds: Import timed out — re-enabling button");
+      console.log("DealersOrbit: Import timed out — re-enabling button");
     }, 15000); // 15 second timeout
 
     try {
@@ -569,12 +569,12 @@ function createImportButton(vehicleData) {
         btn.style.background = "#16a34a";
       } else {
         btn.disabled = false;
-        btn.textContent = "⊕ Import to OrbitAds";
+        btn.textContent = "⊕ Import to DealersOrbit";
         btn.style.background = "";
       }
     } catch (err) {
       clearTimeout(timeout);
-      console.error("OrbitAds: Failed to send message:", err);
+      console.error("DealersOrbit: Failed to send message:", err);
 
       // Check if extension context was invalidated
       if (err.message?.includes("Extension context invalidated") ||
@@ -582,7 +582,7 @@ function createImportButton(vehicleData) {
         btn.disabled = false;
         btn.textContent = "⚠️ Please close & reopen this tab";
         btn.style.background = "#dc2626";
-        btn.title = "The OrbitAds extension was updated. Close this tab and open a new one to continue.";
+        btn.title = "The DealersOrbit extension was updated. Close this tab and open a new one to continue.";
       } else {
         // Generic retry error
         btn.disabled = false;
@@ -673,7 +673,7 @@ async function ensurePublicPrivacy() {
   // Open privacy picker
   const privacyBtn = document.querySelector('[aria-label*="Edit privacy"]');
   if (!privacyBtn) {
-    console.log("OrbitAds: privacy button not found, skipping");
+    console.log("DealersOrbit: privacy button not found, skipping");
     return;
   }
   privacyBtn.click();
@@ -693,7 +693,7 @@ async function ensurePublicPrivacy() {
   if (doneBtn) {
     doneBtn.closest('[role="button"]')?.click() || doneBtn.click();
     await new Promise(r => setTimeout(r, 800));
-    console.log("OrbitAds: privacy set to Public");
+    console.log("DealersOrbit: privacy set to Public");
   } else {
     // fallback: Back button
     const backBtn = document.querySelector('[aria-label="Back"]');
@@ -707,7 +707,7 @@ async function openPostComposer() {
   const createPostBtn = Array.from(document.querySelectorAll('[role="button"]')).find(
     el => /what.s on your mind/i.test(el.textContent)
   );
-  if (!createPostBtn) throw new Error("OrbitAds: 'What’s on your mind' button not found");
+  if (!createPostBtn) throw new Error("DealersOrbit: 'What’s on your mind' button not found");
   createPostBtn.click();
   await new Promise(r => setTimeout(r, 1200));
 
@@ -720,12 +720,12 @@ async function openPostComposer() {
         resolve();
       } else if (Date.now() > deadline) {
         clearInterval(check);
-        reject(new Error("OrbitAds: composer did not open"));
+        reject(new Error("DealersOrbit: composer did not open"));
       }
     }, 300);
   });
   await new Promise(r => setTimeout(r, 500));
-  console.log("OrbitAds: composer opened");
+  console.log("DealersOrbit: composer opened");
 }
 
 async function addCaptionToPost(caption) {
@@ -740,7 +740,7 @@ async function addCaptionToPost(caption) {
     dialog?.querySelector('div[contenteditable="true"][data-lexical-editor="true"]') ||
     document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
 
-  if (!editor) throw new Error("OrbitAds: caption editor not found");
+  if (!editor) throw new Error("DealersOrbit: caption editor not found");
   editor.focus();
   await new Promise(r => setTimeout(r, 300));
   document.execCommand('selectAll', false, null);
@@ -753,14 +753,14 @@ async function addCaptionToPost(caption) {
   document.execCommand('paste', false, null);
 
   await new Promise(r => setTimeout(r, 400));
-  console.log("OrbitAds: caption inserted");
+  console.log("DealersOrbit: caption inserted");
 }
 
 async function uploadFilesToPost(photos, videoUrl) {
   const photoUrls = photos || [];
 
   if (photoUrls.length === 0 && !videoUrl) {
-    console.log("OrbitAds: no files to upload, skipping");
+    console.log("DealersOrbit: no files to upload, skipping");
     return;
   }
 
@@ -771,9 +771,9 @@ async function uploadFilesToPost(photos, videoUrl) {
     document.querySelector('input[type="file"][multiple]') ||
     document.querySelector('input[type="file"]');
 
-  if (!fileInput) throw new Error("OrbitAds: file input not found on page");
+  if (!fileInput) throw new Error("DealersOrbit: file input not found on page");
 
-  console.log("OrbitAds: file input accept:", fileInput.accept);
+  console.log("DealersOrbit: file input accept:", fileInput.accept);
   const acceptsVideo = /video/i.test(fileInput.accept);
 
   const dt = new DataTransfer();
@@ -782,13 +782,13 @@ async function uploadFilesToPost(photos, videoUrl) {
   const photoFiles = await Promise.all(photoUrls.map(async (url, i) => {
     try {
       const resp = await fetch(url);
-      if (!resp.ok) { console.warn(`OrbitAds: photo ${i + 1} HTTP ${resp.status}`); return null; }
+      if (!resp.ok) { console.warn(`DealersOrbit: photo ${i + 1} HTTP ${resp.status}`); return null; }
       const blob = await resp.blob();
-      console.log(`OrbitAds: photo ${i + 1}: ${(blob.size / 1024).toFixed(0)}KB`);
+      console.log(`DealersOrbit: photo ${i + 1}: ${(blob.size / 1024).toFixed(0)}KB`);
       const ext = url.split('?')[0].split('.').pop().toLowerCase() || 'jpg';
       return new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' });
     } catch (e) {
-      console.warn(`OrbitAds: photo ${i + 1} error:`, e.message);
+      console.warn(`DealersOrbit: photo ${i + 1} error:`, e.message);
       return null;
     }
   }));
@@ -800,20 +800,20 @@ async function uploadFilesToPost(photos, videoUrl) {
       const resp = await fetch(videoUrl);
       if (resp.ok) {
         const blob = await resp.blob();
-        console.log('OrbitAds: video size:', (blob.size / 1024 / 1024).toFixed(1), 'MB');
+        console.log('DealersOrbit: video size:', (blob.size / 1024 / 1024).toFixed(1), 'MB');
         dt.items.add(new File([blob], 'vehicle-ad.mp4', { type: 'video/mp4' }));
       } else {
-        console.log('OrbitAds: video download failed:', resp.status);
+        console.log('DealersOrbit: video download failed:', resp.status);
       }
     } catch (err) {
-      console.log('OrbitAds: video fetch error:', err.message);
+      console.log('DealersOrbit: video fetch error:', err.message);
     }
   } else if (videoUrl) {
-    console.log('OrbitAds: file input photos-only — skipping video');
+    console.log('DealersOrbit: file input photos-only — skipping video');
   }
 
   if (dt.files.length === 0) {
-    console.log("OrbitAds: no files to attach");
+    console.log("DealersOrbit: no files to attach");
     return;
   }
 
@@ -821,7 +821,7 @@ async function uploadFilesToPost(photos, videoUrl) {
   fileInput.files = dt.files;
   fileInput.dispatchEvent(new Event('change', { bubbles: true }));
   fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-  console.log(`OrbitAds: attached ${dt.files.length} files`);
+  console.log(`DealersOrbit: attached ${dt.files.length} files`);
 
   // Wait for a contenteditable (caption box) to appear in the photo composer.
   // Facebook's photo composer doesn't consistently use role="dialog" so we
@@ -834,14 +834,14 @@ async function uploadFilesToPost(photos, videoUrl) {
     }, 300);
   });
   await sleep(1000);
-  console.log("OrbitAds: photo composer ready");
+  console.log("DealersOrbit: photo composer ready");
 }
 
-function showOrbitAdsBanner(message) {
-  document.querySelector(".orbitads-post-banner")?.remove();
+function showDealersOrbitBanner(message) {
+  document.querySelector(".dealersorbit-post-banner")?.remove();
 
   const banner = document.createElement("div");
-  banner.className = "orbitads-post-banner";
+  banner.className = "dealersorbit-post-banner";
   banner.style.cssText = `
     position: fixed;
     top: 20px;
@@ -862,26 +862,26 @@ function showOrbitAdsBanner(message) {
   banner.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="font-size:18px">📘</span>
-      <strong>OrbitAds FB Post</strong>
+      <strong>DealersOrbit FB Post</strong>
     </div>
-    <div class="orbitads-banner-msg" style="font-weight:400;font-size:13px">${message}</div>
+    <div class="dealersorbit-banner-msg" style="font-weight:400;font-size:13px">${message}</div>
   `;
   document.body.appendChild(banner);
   return banner;
 }
 
 function updateBanner(message, type = 'working') {
-  const banner = document.querySelector(".orbitads-post-banner");
+  const banner = document.querySelector(".dealersorbit-post-banner");
   if (!banner) return;
 
-  const msgEl = banner.querySelector(".orbitads-banner-msg");
+  const msgEl = banner.querySelector(".dealersorbit-banner-msg");
   if (msgEl) msgEl.textContent = message;
 
   if (type === 'success') {
     banner.style.background = '#16a34a';
-    if (!banner.querySelector('#orbitads-post-dismiss')) {
+    if (!banner.querySelector('#dealersorbit-post-dismiss')) {
       const btn = document.createElement('button');
-      btn.id = 'orbitads-post-dismiss';
+      btn.id = 'dealersorbit-post-dismiss';
       btn.textContent = 'Dismiss';
       btn.style.cssText = `
         margin-top:8px;background:transparent;color:white;
@@ -894,9 +894,9 @@ function updateBanner(message, type = 'working') {
     setTimeout(() => banner.remove(), 10000);
   } else if (type === 'error') {
     banner.style.background = '#dc2626';
-    if (!banner.querySelector('#orbitads-post-dismiss')) {
+    if (!banner.querySelector('#dealersorbit-post-dismiss')) {
       const btn = document.createElement('button');
-      btn.id = 'orbitads-post-dismiss';
+      btn.id = 'dealersorbit-post-dismiss';
       btn.textContent = 'Dismiss';
       btn.style.cssText = `
         margin-top:8px;background:transparent;color:white;
@@ -915,8 +915,8 @@ async function tryFacebookPostFlow() {
   const age = Date.now() - new Date(fb_post.created_at).getTime();
   if (age > 10 * 60 * 1000) return;
 
-  console.log("OrbitAds: FB Post flow started", fb_post);
-  showOrbitAdsBanner("Preparing post...");
+  console.log("DealersOrbit: FB Post flow started", fb_post);
+  showDealersOrbitBanner("Preparing post...");
 
   try {
     // Support both new flat `photos` array (from modal) and old exterior/interior split
@@ -952,16 +952,16 @@ async function tryFacebookPostFlow() {
     });
 
     updateBanner("✓ Post ready! Review and click Post.", "success");
-    console.log("OrbitAds: FB Post flow complete");
+    console.log("DealersOrbit: FB Post flow complete");
 
   } catch (err) {
-    console.error("OrbitAds: FB Post flow failed:", err);
+    console.error("DealersOrbit: FB Post flow failed:", err);
     updateBanner(`❌ ${err.message}`, "error");
   }
 }
 
 async function clickFirstGroup() {
-  console.log('OrbitAds: Looking for first group in sidebar...');
+  console.log('DealersOrbit: Looking for first group in sidebar...');
 
   // Find group items by looking for 'Last active' sibling text (sidebar items have this)
   const allSpans = document.querySelectorAll('span');
@@ -995,19 +995,19 @@ async function clickFirstGroup() {
   }
 
   if (!firstGroupEl) {
-    console.log('OrbitAds: No groups found in sidebar');
+    console.log('DealersOrbit: No groups found in sidebar');
     return false;
   }
 
   const groupName = firstGroupEl.textContent?.trim().split('\n')[0] || 'Unknown Group';
-  console.log(`OrbitAds: Clicking group: ${groupName}`);
+  console.log(`DealersOrbit: Clicking group: ${groupName}`);
   firstGroupEl.click();
   await sleep(3000);
   return true;
 }
 
 async function clickWriteSomethingInGroup() {
-  console.log('OrbitAds: Looking for Write something button...');
+  console.log('DealersOrbit: Looking for Write something button...');
 
   const allButtons = document.querySelectorAll('[role="button"]');
   let writeBtn = null;
@@ -1020,11 +1020,11 @@ async function clickWriteSomethingInGroup() {
   }
 
   if (!writeBtn) {
-    console.log('OrbitAds: Write something button not found');
+    console.log('DealersOrbit: Write something button not found');
     return false;
   }
 
-  console.log('OrbitAds: Clicking Write something...');
+  console.log('DealersOrbit: Clicking Write something...');
   writeBtn.click();
   await sleep(2000);
   return true;
@@ -1035,25 +1035,25 @@ async function scrollToAddGroupsButton() {
   for (const span of allSpans) {
     if (span.textContent?.trim() === 'Add groups') {
       span.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      console.log('OrbitAds: Scrolled to Add groups button');
+      console.log('DealersOrbit: Scrolled to Add groups button');
       return;
     }
   }
 }
 
 async function tryFacebookGroupsFlow() {
-  console.log('OrbitAds: Starting Facebook Groups post flow...');
+  console.log('DealersOrbit: Starting Facebook Groups post flow...');
 
   const { fb_groups_post } = await chrome.storage.local.get('fb_groups_post');
   if (!fb_groups_post) {
-    console.log('OrbitAds: No fb_groups_post data found');
+    console.log('DealersOrbit: No fb_groups_post data found');
     return;
   }
 
-  showOrbitAdsBanner('👥 OrbitAds: Finding your groups...');
+  showDealersOrbitBanner('👥 DealersOrbit: Finding your groups...');
 
   try {
-    updateBanner('👥 OrbitAds: Selecting first group...');
+    updateBanner('👥 DealersOrbit: Selecting first group...');
     const groupClicked = await clickFirstGroup();
 
     if (!groupClicked) {
@@ -1062,7 +1062,7 @@ async function tryFacebookGroupsFlow() {
     }
 
     await sleep(3000);
-    updateBanner('👥 OrbitAds: Opening post composer...');
+    updateBanner('👥 DealersOrbit: Opening post composer...');
 
     const composerOpened = await clickWriteSomethingInGroup();
 
@@ -1073,16 +1073,16 @@ async function tryFacebookGroupsFlow() {
 
     await sleep(2000);
 
-    updateBanner('👥 OrbitAds: Adding caption...');
+    updateBanner('👥 DealersOrbit: Adding caption...');
     await addCaptionToPost(fb_groups_post.caption);
     await sleep(500);
 
-    updateBanner('👥 OrbitAds: Uploading photos & video...');
+    updateBanner('👥 DealersOrbit: Uploading photos & video...');
     await uploadFilesToPost(fb_groups_post.photos, fb_groups_post.video_url);
 
     updateBanner('✅ Ready! Click Add Groups to share to more groups, then click Post.', 'success');
     await scrollToAddGroupsButton();
-    setTimeout(() => document.querySelector('.orbitads-post-banner')?.remove(), 6000);
+    setTimeout(() => document.querySelector('.dealersorbit-post-banner')?.remove(), 6000);
 
     await chrome.storage.local.remove('fb_groups_post');
     chrome.runtime.sendMessage({ type: 'FB_GROUPS_POST_COMPLETE' });
@@ -1093,7 +1093,7 @@ async function tryFacebookGroupsFlow() {
     });
 
   } catch (err) {
-    console.error('OrbitAds: Groups flow error:', err);
+    console.error('DealersOrbit: Groups flow error:', err);
     updateBanner(`❌ Error: ${err.message}. Please try again.`, 'error');
   }
 }
@@ -1108,12 +1108,12 @@ async function tryFacebookAutoFill() {
   const age = Date.now() - new Date(fb_listing.created_at).getTime();
   if (age > 600000) return;
 
-  console.log("OrbitAds: Waiting for Facebook form to load...");
+  console.log("DealersOrbit: Waiting for Facebook form to load...");
   await waitForElement('[aria-label="Location"]', 15000);
   await sleep(3000);
 
   const v = fb_listing.vehicle;
-  console.log("OrbitAds: Starting form fill...", v);
+  console.log("DealersOrbit: Starting form fill...", v);
 
   // ── Step 1: Upload photos ─────────────────────────────────
   await uploadPhotosToFacebook(fb_listing);
@@ -1151,7 +1151,7 @@ async function tryFacebookAutoFill() {
       await sleep(1500);
 
       const options = Array.from(document.querySelectorAll('[role="option"]'));
-      console.log(`OrbitAds: Make options found: ${options.length}`);
+      console.log(`DealersOrbit: Make options found: ${options.length}`);
 
       const match = options.find(el =>
         el.innerText?.trim().toLowerCase() === makeFormatted.toLowerCase()
@@ -1159,15 +1159,15 @@ async function tryFacebookAutoFill() {
 
       if (match) {
         match.click();
-        console.log(`OrbitAds: ✓ Make → ${makeFormatted}`);
+        console.log(`DealersOrbit: ✓ Make → ${makeFormatted}`);
         await sleep(2500); // wait for Model field to appear
       } else {
-        console.log(`OrbitAds: ✗ Make "${makeFormatted}" not found in options`);
+        console.log(`DealersOrbit: ✗ Make "${makeFormatted}" not found in options`);
         document.body.click();
         await sleep(500);
       }
     } else {
-      console.log("OrbitAds: ✗ Make combobox not found");
+      console.log("DealersOrbit: ✗ Make combobox not found");
     }
   }
 
@@ -1199,10 +1199,10 @@ async function tryFacebookAutoFill() {
       modelInput.dispatchEvent(new Event('input', { bubbles: true }));
       modelInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-      console.log(`OrbitAds: ✓ Model → ${v.model}`);
+      console.log(`DealersOrbit: ✓ Model → ${v.model}`);
       await sleep(500);
     } else {
-      console.log("OrbitAds: ✗ Model input not found");
+      console.log("DealersOrbit: ✗ Model input not found");
     }
   }
 
@@ -1244,7 +1244,7 @@ async function tryFacebookAutoFill() {
   const bodyStyle = mapToFacebookBodyStyle(
     fb_listing.vehicle?.body_style || fb_listing.vehicle?.vehicle_type
   ) || mapToFacebookBodyStyle(guessBodyStyle(v.model || ""));
-  console.log(`OrbitAds: body style: ${fb_listing.vehicle?.body_style} → ${bodyStyle}`);
+  console.log(`DealersOrbit: body style: ${fb_listing.vehicle?.body_style} → ${bodyStyle}`);
   await fillDropdown("Body style", bodyStyle || "Other");
   await sleep(1000);
 
@@ -1260,8 +1260,8 @@ async function tryFacebookAutoFill() {
   const exteriorFbColor = mapToFacebookColor(fb_listing.vehicle?.exterior_color);
   const interiorFbColor = mapToFacebookColor(fb_listing.vehicle?.interior_color);
 
-  console.log(`OrbitAds: exterior color: ${fb_listing.vehicle?.exterior_color} → ${exteriorFbColor}`);
-  console.log(`OrbitAds: interior color: ${fb_listing.vehicle?.interior_color} → ${interiorFbColor}`);
+  console.log(`DealersOrbit: exterior color: ${fb_listing.vehicle?.exterior_color} → ${exteriorFbColor}`);
+  console.log(`DealersOrbit: interior color: ${fb_listing.vehicle?.interior_color} → ${interiorFbColor}`);
 
   if (exteriorFbColor) {
     await fillDropdown("Exterior color", exteriorFbColor);
@@ -1279,7 +1279,7 @@ async function tryFacebookAutoFill() {
   );
   if (cleanTitleCheckbox && cleanTitleCheckbox.getAttribute('aria-checked') !== 'true') {
     cleanTitleCheckbox.click();
-    console.log("OrbitAds: ✓ Clean title checked");
+    console.log("DealersOrbit: ✓ Clean title checked");
     await sleep(500);
   }
 
@@ -1293,7 +1293,7 @@ async function tryFacebookAutoFill() {
   }
 
   showFbAutoFillBanner();
-  console.log("OrbitAds: Form fill complete.");
+  console.log("DealersOrbit: Form fill complete.");
 }
 
 // ── Exterior/Interior color ────────────────────────────────
@@ -1303,7 +1303,7 @@ async function tryFacebookAutoFill() {
 
 async function fillDropdown(labelText, optionText) {
   const comboboxes = Array.from(document.querySelectorAll('[role="combobox"]'));
-  console.log(`OrbitAds: Looking for "${labelText}" among ${comboboxes.length} comboboxes:`,
+  console.log(`DealersOrbit: Looking for "${labelText}" among ${comboboxes.length} comboboxes:`,
     comboboxes.map(el => el.innerText?.trim().slice(0, 20)));
 
   const trigger = comboboxes.find(el =>
@@ -1312,7 +1312,7 @@ async function fillDropdown(labelText, optionText) {
   // ... rest unchanged
 
   if (!trigger) {
-    console.log(`OrbitAds: Dropdown "${labelText}" not found`);
+    console.log(`DealersOrbit: Dropdown "${labelText}" not found`);
     return false;
   }
 
@@ -1347,7 +1347,7 @@ async function fillDropdown(labelText, optionText) {
 
       if (match) {
         match.click();
-        console.log(`OrbitAds: ✓ "${labelText}" → "${match.innerText?.trim()}"`);
+        console.log(`DealersOrbit: ✓ "${labelText}" → "${match.innerText?.trim()}"`);
         await sleep(500);
         return true;
       }
@@ -1359,7 +1359,7 @@ async function fillDropdown(labelText, optionText) {
   // Close dropdown
   document.body.click();
   await sleep(300);
-  console.log(`OrbitAds: ✗ No match for "${optionText}" in "${labelText}" dropdown`);
+  console.log(`DealersOrbit: ✗ No match for "${optionText}" in "${labelText}" dropdown`);
   return false;
 }
 
@@ -1382,11 +1382,11 @@ async function uploadPhotosToFacebook(fbListing) {
   const fileInput = document.querySelector('input[type="file"][accept*="image"]');
 
   if (!fileInput) {
-    console.log("OrbitAds: Photo file input not found");
+    console.log("DealersOrbit: Photo file input not found");
     return;
   }
 
-  console.log(`OrbitAds: Downloading ${Math.min(photoUrls.length, 20)} photos...`);
+  console.log(`DealersOrbit: Downloading ${Math.min(photoUrls.length, 20)} photos...`);
 
   try {
     // Download photos and convert to File objects
@@ -1401,7 +1401,7 @@ async function uploadPhotosToFacebook(fbListing) {
         files.push(file);
         await sleep(100);
       } catch (e) {
-        console.log(`OrbitAds: Failed to download photo: ${url}`);
+        console.log(`DealersOrbit: Failed to download photo: ${url}`);
       }
     }
 
@@ -1416,17 +1416,17 @@ async function uploadPhotosToFacebook(fbListing) {
     fileInput.dispatchEvent(new Event('change', { bubbles: true }));
     fileInput.dispatchEvent(new Event('input', { bubbles: true }));
 
-    console.log(`OrbitAds: Uploaded ${files.length} photos`);
+    console.log(`DealersOrbit: Uploaded ${files.length} photos`);
     await sleep(2000);
 
   } catch (err) {
-    console.error("OrbitAds: Photo upload failed:", err);
+    console.error("DealersOrbit: Photo upload failed:", err);
   }
 }
 
 async function uploadVideoToFacebook(fbListing) {
   if (!fbListing.video_url) {
-    console.log("OrbitAds: No video URL — skipping video upload");
+    console.log("DealersOrbit: No video URL — skipping video upload");
     return;
   }
 
@@ -1435,16 +1435,16 @@ async function uploadVideoToFacebook(fbListing) {
   );
 
   if (!videoInput) {
-    console.log("OrbitAds: Video file input not found");
+    console.log("DealersOrbit: Video file input not found");
     return;
   }
 
-  console.log("OrbitAds: Downloading video for Facebook upload...");
+  console.log("DealersOrbit: Downloading video for Facebook upload...");
 
   try {
     const resp = await fetch(fbListing.video_url);
     if (!resp.ok) {
-      console.log("OrbitAds: Video download failed:", resp.status);
+      console.log("DealersOrbit: Video download failed:", resp.status);
       return;
     }
 
@@ -1458,11 +1458,11 @@ async function uploadVideoToFacebook(fbListing) {
     videoInput.dispatchEvent(new Event("change", { bubbles: true }));
     videoInput.dispatchEvent(new Event("input", { bubbles: true }));
 
-    console.log("OrbitAds: ✓ Video uploaded to Facebook — waiting for processing...");
+    console.log("DealersOrbit: ✓ Video uploaded to Facebook — waiting for processing...");
     await sleep(4000); // wait 4 seconds for Facebook to process
 
   } catch (err) {
-    console.error("OrbitAds: Video upload failed:", err);
+    console.error("DealersOrbit: Video upload failed:", err);
   }
 }
 
@@ -1651,10 +1651,10 @@ async function waitForElement(selector, timeout = 10000) {
 
 function showFbAutoFillBanner() {
   // Remove existing banner if any
-  document.querySelector(".orbitads-fb-banner")?.remove();
+  document.querySelector(".dealersorbit-fb-banner")?.remove();
 
   const banner = document.createElement("div");
-  banner.className = "orbitads-fb-banner";
+  banner.className = "dealersorbit-fb-banner";
   banner.style.cssText = `
     position: fixed;
     top: 20px;
@@ -1672,17 +1672,17 @@ function showFbAutoFillBanner() {
     line-height: 1.5;
   `;
   banner.innerHTML = `
-  ✓ <strong>OrbitAds filled your listing!</strong><br>
+  ✓ <strong>DealersOrbit filled your listing!</strong><br>
   <span style="font-weight:400;font-size:13px">
     ⏳ Wait 30 seconds for video to process, then review and click <strong>Next</strong>.
   </span>
     <div style="margin-top:8px">
-      <button id="orbitads-confirm-post" style="
+      <button id="dealersorbit-confirm-post" style="
         background:white;color:#1877f2;border:none;
         padding:6px 12px;border-radius:4px;font-weight:700;
         cursor:pointer;font-size:12px;margin-right:8px
       ">I've Posted ✓</button>
-      <button id="orbitads-dismiss" style="
+      <button id="dealersorbit-dismiss" style="
         background:transparent;color:white;border:1px solid rgba(255,255,255,0.5);
         padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px
       ">Dismiss</button>
@@ -1692,7 +1692,7 @@ function showFbAutoFillBanner() {
   document.body.appendChild(banner);
 
   // "I've Posted" button — confirms posting and processes next queue item
-  document.getElementById("orbitads-confirm-post")?.addEventListener("click", async () => {
+  document.getElementById("dealersorbit-confirm-post")?.addEventListener("click", async () => {
     const { fb_listing } = await chrome.storage.local.get("fb_listing");
 
     if (fb_listing?.queue_item_id) {
@@ -1719,7 +1719,7 @@ function showFbAutoFillBanner() {
     setTimeout(() => success.remove(), 4000);
   });
 
-  document.getElementById("orbitads-dismiss")?.addEventListener("click", () => {
+  document.getElementById("dealersorbit-dismiss")?.addEventListener("click", () => {
     banner.remove();
   });
 }
@@ -1804,16 +1804,16 @@ async function init() {
 setTimeout(init, 1500);
 setTimeout(tryFacebookAutoFill, 2000);
 
-// FB Post flow — triggered when popup opens facebook.com?orbitads_post=1
+// FB Post flow — triggered when popup opens facebook.com?dealersorbit_post=1
 if (window.location.href.includes("facebook.com") &&
-    new URLSearchParams(window.location.search).get("orbitads_post") === "1") {
+    new URLSearchParams(window.location.search).get("dealersorbit_post") === "1") {
   setTimeout(tryFacebookPostFlow, 1000);
 }
 
-// FB Groups post flow — triggered when popup opens facebook.com/groups/feed/?orbitads_groups=1
+// FB Groups post flow — triggered when popup opens facebook.com/groups/feed/?dealersorbit_groups=1
 if (window.location.href.includes("facebook.com") &&
-    new URLSearchParams(window.location.search).get("orbitads_groups") === "1") {
-  console.log('OrbitAds: FB groups post mode detected');
+    new URLSearchParams(window.location.search).get("dealersorbit_groups") === "1") {
+  console.log('DealersOrbit: FB groups post mode detected');
   setTimeout(tryFacebookGroupsFlow, 4000);
 }
 

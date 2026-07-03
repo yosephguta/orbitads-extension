@@ -1,10 +1,10 @@
 /**
- * OrbitAds Background Service Worker
+ * DealersOrbit Background Service Worker
  * ─────────────────────────────────────
  * Handles:
  *   1. GET_CONFIG     — returns scraper config for a domain
  *   2. ADD_TO_QUEUE   — scrapes detail page then adds to queue
- *   3. Queue processing — sends jobs to OrbitAds backend one at a time
+ *   3. Queue processing — sends jobs to DealersOrbit backend one at a time
  */
 
 // Open side panel when extension icon is clicked
@@ -138,11 +138,11 @@ const API_BASE = IS_DEV
 async function handleExpiredToken() {
   await chrome.storage.local.remove(["token", "user"]);
   await chrome.storage.local.set({ session_expired: true });
-  console.warn("OrbitAds: Session expired — user will be prompted to sign in");
+  console.warn("DealersOrbit: Session expired — user will be prompted to sign in");
 }
 
 function getConfigForDomain(domain) {
-  console.log("OrbitAds: Looking up domain:", domain);
+  console.log("DealersOrbit: Looking up domain:", domain);
 
   // Try exact match first
   if (DEALERSHIP_CONFIGS[domain]) {
@@ -199,13 +199,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_CONFIG") {
     const config = getConfigForDomain(message.domain);
-    console.log(`OrbitAds: Config for ${message.domain}:`, config?.name || "none");
+    console.log(`DealersOrbit: Config for ${message.domain}:`, config?.name || "none");
     sendResponse({ config });
     return true;
   }
 
   if (message.type === "ADD_TO_QUEUE") {
-    console.log("OrbitAds: Received vehicle, fetching detail page...", message.vehicle);
+    console.log("DealersOrbit: Received vehicle, fetching detail page...", message.vehicle);
     enrichAndQueue(message.vehicle)
       .then(result => sendResponse({ success: true, queueLength: result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
@@ -281,7 +281,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "FB_POST_COMPLETE") {
     chrome.storage.local.remove("fb_post");
-    console.log("OrbitAds: FB Post complete for job", message.job_id);
+    console.log("DealersOrbit: FB Post complete for job", message.job_id);
     (async () => {
       const { token } = await chrome.storage.local.get("token");
       if (token && message.vehicle) {
@@ -310,7 +310,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'FB_GROUPS_POST_COMPLETE') {
-    console.log('OrbitAds: FB groups post completed');
+    console.log('DealersOrbit: FB groups post completed');
     (async () => {
       const { token } = await chrome.storage.local.get("token");
       if (token && message.vehicle) {
@@ -337,7 +337,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { queue = [] } = await chrome.storage.local.get('queue');
       const job = queue.find(j => j.id === message.job_id);
       if (job && (job.status === 'generating' || job.status === 'waiting')) {
-        console.log('OrbitAds: Restarting poll for job', job.id);
+        console.log('DealersOrbit: Restarting poll for job', job.id);
         processQueue();
       }
       sendResponse({ success: true });
@@ -394,7 +394,7 @@ async function enrichAndQueue(vehicle) {
   enrichQueue.push(vehicle);
 
   if (isEnriching) {
-    console.log(`OrbitAds: Queued for enrichment: ${vehicle.model}`);
+    console.log(`DealersOrbit: Queued for enrichment: ${vehicle.model}`);
     return;
   }
 
@@ -405,21 +405,21 @@ async function enrichAndQueue(vehicle) {
       await enrichSingleVehicle(next);
     }
   } catch (err) {
-    console.error("OrbitAds: Enrich queue error:", err);
+    console.error("DealersOrbit: Enrich queue error:", err);
   } finally {
     isEnriching = false;  // ← always reset even on error
   }
 }
 
 async function enrichSingleVehicle(vehicle) {
-  console.log("OrbitAds: enrichSingleVehicle:", vehicle.model);
-  console.log("OrbitAds: listing_url:", vehicle.listing_url);
+  console.log("DealersOrbit: enrichSingleVehicle:", vehicle.model);
+  console.log("DealersOrbit: listing_url:", vehicle.listing_url);
 
   // ── Step 1: Scrape detail page ───────────────────────────
   if (vehicle.listing_url) {
     let tab = null;
     try {
-      console.log(`OrbitAds: Opening detail page: ${vehicle.listing_url}`);
+      console.log(`DealersOrbit: Opening detail page: ${vehicle.listing_url}`);
       tab = await chrome.tabs.create({
         url: vehicle.listing_url,
         active: false,
@@ -434,7 +434,7 @@ async function enrichSingleVehicle(vehicle) {
       });
 
       const detailData = results?.[0]?.result;
-      console.log(`OrbitAds: Detail page data for ${vehicle.model}:`, detailData);
+      console.log(`DealersOrbit: Detail page data for ${vehicle.model}:`, detailData);
 
       if (detailData) {
         // Verify data matches expected vehicle before using it
@@ -444,7 +444,7 @@ async function enrichSingleVehicle(vehicle) {
           detailData.title.toLowerCase().includes(vehicle.year);
 
         if (!titleMatch) {
-          console.warn(`OrbitAds: Title mismatch! Expected ${vehicle.model}, got ${detailData.title}. Skipping detail data.`);
+          console.warn(`DealersOrbit: Title mismatch! Expected ${vehicle.model}, got ${detailData.title}. Skipping detail data.`);
         } else {
           vehicle.vin     = detailData.vin     || vehicle.vin;
           vehicle.price   = detailData.price   || vehicle.price;
@@ -452,7 +452,7 @@ async function enrichSingleVehicle(vehicle) {
 
           if (detailData.photos?.length > (vehicle.photos?.length || 0)) {
             vehicle.photos = detailData.photos;
-            console.log(`OrbitAds: Got ${detailData.photos.length} full photos`);
+            console.log(`DealersOrbit: Got ${detailData.photos.length} full photos`);
           }
 
           if (!vehicle.trim && detailData.title) {
@@ -465,8 +465,8 @@ async function enrichSingleVehicle(vehicle) {
           vehicle.interior_color = detailData.interior_color || null;
           // JBA body style is more specific than NHTSA — prefer it
           vehicle.body_style = detailData.body_style || vehicle.body_style || null;
-          console.log(`OrbitAds: Colors — exterior: ${vehicle.exterior_color}, interior: ${vehicle.interior_color}`);
-          console.log(`OrbitAds: Body style — ${vehicle.body_style}`);
+          console.log(`DealersOrbit: Colors — exterior: ${vehicle.exterior_color}, interior: ${vehicle.interior_color}`);
+          console.log(`DealersOrbit: Body style — ${vehicle.body_style}`);
         }
       }
 
@@ -476,10 +476,10 @@ async function enrichSingleVehicle(vehicle) {
       vehicle.photos_for_video = applyPhotoHints(
         vehicle.photos || [], domainConfig?.photo_hints
       );
-      console.log(`OrbitAds: Selected ${vehicle.photos_for_video.length} photos using hints`);
+      console.log(`DealersOrbit: Selected ${vehicle.photos_for_video.length} photos using hints`);
 
     } catch (err) {
-      console.error("OrbitAds: Detail page scrape failed:", err);
+      console.error("DealersOrbit: Detail page scrape failed:", err);
     } finally {
       if (tab) {
         try { await chrome.tabs.remove(tab.id); } catch (e) { }
@@ -506,7 +506,7 @@ async function enrichSingleVehicle(vehicle) {
   );
 
   if (isDuplicate) {
-    console.log(`OrbitAds: Skipping duplicate VIN: ${vehicle.vin}`);
+    console.log(`DealersOrbit: Skipping duplicate VIN: ${vehicle.vin}`);
     return;
   }
 
@@ -519,10 +519,10 @@ async function enrichSingleVehicle(vehicle) {
   const total = pending_review_queue.length;
   chrome.action.setBadgeText({ text: String(total) });
   chrome.action.setBadgeBackgroundColor({ color: "#1a56db" });
-  console.log(`OrbitAds: Added ${vehicle.model} to queue. Total: ${total}`);
+  console.log(`DealersOrbit: Added ${vehicle.model} to queue. Total: ${total}`);
 
   // ── Queue for sequential classification ──────────────
-  console.log(`OrbitAds: Queuing classification for ${vehicle.model}...`);
+  console.log(`DealersOrbit: Queuing classification for ${vehicle.model}...`);
   classifyInBackground(vehicle, reviewItem.queue_item_id);
 
   // Open side panel
@@ -547,7 +547,7 @@ async function processClassifyQueue() {
     try {
       await classifySingleVehicle(vehicle, queueItemId);
     } catch (err) {
-      console.error("OrbitAds: Classification failed for", vehicle.model, err);
+      console.error("DealersOrbit: Classification failed for", vehicle.model, err);
     }
   }
 
@@ -610,13 +610,13 @@ async function classifySingleVehicle(vehicle, queueItemId) {
       pending_review_queue[idx].classified    = classified;
       pending_review_queue[idx].explicit_other = explicitOther;
       await chrome.storage.local.set({ pending_review_queue });
-      console.log(`OrbitAds: Classification saved — ${vehicle.model} (id: ${queueItemId})`);
+      console.log(`DealersOrbit: Classification saved — ${vehicle.model} (id: ${queueItemId})`);
     } else {
-      console.warn(`OrbitAds: No queue item found for ${vehicle.model} (id: ${queueItemId})`);
+      console.warn(`DealersOrbit: No queue item found for ${vehicle.model} (id: ${queueItemId})`);
     }
 
   } catch (err) {
-    console.error("OrbitAds: classifySingleVehicle failed:", err);
+    console.error("DealersOrbit: classifySingleVehicle failed:", err);
   }
 }
 
@@ -771,10 +771,10 @@ async function markListingPosted(vehicle, listingUrl) {
         method: "PATCH",
         headers: { "Authorization": `Bearer ${token}` },
       });
-      console.log(`OrbitAds: Marked listing ${match.id} as posted, URL: ${listingUrl}`);
+      console.log(`DealersOrbit: Marked listing ${match.id} as posted, URL: ${listingUrl}`);
     }
   } catch (err) {
-    console.error("OrbitAds: Failed to mark listing posted:", err);
+    console.error("DealersOrbit: Failed to mark listing posted:", err);
   }
 }
 
@@ -801,7 +801,7 @@ async function drainGenQueueAdditions() {
     try {
       await addToQueue(vehicle, videoType, theme, customScript, outroVideoId, language);
     } catch (err) {
-      console.error("OrbitAds: addToQueue failed:", err);
+      console.error("DealersOrbit: addToQueue failed:", err);
     }
   }
   isAddingToGenQueue = false;
@@ -819,7 +819,7 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
       j.status !== "failed"
     );
     if (alreadyQueued) {
-      console.log(`OrbitAds: VIN ${vehicle.vin} already in queue, skipping.`);
+      console.log(`DealersOrbit: VIN ${vehicle.vin} already in queue, skipping.`);
       return queue.length;
     }
   }
@@ -857,7 +857,7 @@ async function processQueue() {
   const generatingJob = queue.find(j => j.status === "generating");
   if (generatingJob) {
     if (generatingJob.api_job_id) {
-      console.log('OrbitAds: Resuming poll for job', generatingJob.id);
+      console.log('DealersOrbit: Resuming poll for job', generatingJob.id);
       resumePolling(generatingJob, queue);
     }
     return;
@@ -869,7 +869,7 @@ async function processQueue() {
   nextJob.status = "generating";
   await saveQueue(queue);
 
-  console.log(`OrbitAds: Processing — ${nextJob.vehicle.year} ${nextJob.vehicle.make} ${nextJob.vehicle.model}`);
+  console.log(`DealersOrbit: Processing — ${nextJob.vehicle.year} ${nextJob.vehicle.make} ${nextJob.vehicle.model}`);
 
   try {
     await realProcessing(nextJob, queue);
@@ -910,15 +910,15 @@ async function saveToListingHistory(job, apiJob, token) {
         photo_urls: JSON.stringify(v.photos_for_video || []),
       }),
     });
-    console.log("OrbitAds: Saved listing to history");
+    console.log("DealersOrbit: Saved listing to history");
   } catch (err) {
-    console.error("OrbitAds: Failed to save listing history:", err);
+    console.error("DealersOrbit: Failed to save listing history:", err);
   }
 }
 
 async function resumePolling(job, queue) {
   if (resumingJobIds.has(job.id)) {
-    console.log('OrbitAds: Already resuming poll for job', job.id);
+    console.log('DealersOrbit: Already resuming poll for job', job.id);
     return;
   }
   resumingJobIds.add(job.id);
@@ -933,7 +933,7 @@ async function resumePolling(job, queue) {
   const MAX_WAIT      = 1200000; // 20 minutes
   let elapsed         = 0;
 
-  console.log('OrbitAds: Resuming polling for job', job.id, 'api_job_id:', job.api_job_id);
+  console.log('DealersOrbit: Resuming polling for job', job.id, 'api_job_id:', job.api_job_id);
 
   try {
     while (elapsed < MAX_WAIT) {
@@ -983,7 +983,7 @@ async function resumePolling(job, queue) {
         }
 
       } catch (err) {
-        console.error('OrbitAds: Resume poll error:', err);
+        console.error('DealersOrbit: Resume poll error:', err);
       }
     }
 
@@ -1001,7 +1001,7 @@ async function realProcessing(job, queue) {
   const jobSnapshot = JSON.parse(JSON.stringify(job));
 
   const { token } = await chrome.storage.local.get("token");
-  console.log("OrbitAds: realProcessing started, token:", !!token);
+  console.log("DealersOrbit: realProcessing started, token:", !!token);
 
   if (!token) {
     throw new Error("Not logged in — please sign in via the extension popup.");
@@ -1009,7 +1009,7 @@ async function realProcessing(job, queue) {
 
   const v = jobSnapshot.vehicle;
 
-  // ── Submit the job to OrbitAds backend ──────────────────
+  // ── Submit the job to DealersOrbit backend ──────────────────
   const jobPayload = {
     vin: v.vin || null,
     listing_url: v.listing_url || null,
@@ -1024,7 +1024,7 @@ async function realProcessing(job, queue) {
     language: jobSnapshot.language || 'en',
   };
 
-  console.log("OrbitAds: Sending job to backend:", {
+  console.log("DealersOrbit: Sending job to backend:", {
     custom_script: jobSnapshot.custom_script?.slice(0, 50),
     theme: jobSnapshot.theme,
     video_type: jobSnapshot.video_type,
@@ -1093,9 +1093,9 @@ async function realProcessing(job, queue) {
       job.label = "Complete!";
       await saveQueue(queue);
 
-      console.log("OrbitAds: Job completed, attempting to save to history...");
-      console.log("OrbitAds: token available:", !!token);
-      console.log("OrbitAds: final_video_url:", pollData.final_video_url);
+      console.log("DealersOrbit: Job completed, attempting to save to history...");
+      console.log("DealersOrbit: token available:", !!token);
+      console.log("DealersOrbit: final_video_url:", pollData.final_video_url);
 
       await saveToListingHistory(jobSnapshot, pollData, token);
       return;
@@ -1175,12 +1175,12 @@ async function runDailySoldCheck(force = false) {
   const now      = Date.now();
   const sixHours = 6 * 60 * 60 * 1000;
   if (!force && last_sold_check && now - last_sold_check < sixHours) {
-    console.log('OrbitAds: Sold check skipped — ran recently');
+    console.log('DealersOrbit: Sold check skipped — ran recently');
     return { sold_ids: [] };
   }
 
   try {
-    console.log('OrbitAds: Running sold check from extension...');
+    console.log('DealersOrbit: Running sold check from extension...');
 
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
       headers: { 'Authorization': `Bearer ${token}` }
@@ -1192,19 +1192,19 @@ async function runDailySoldCheck(force = false) {
     const toCheck = listings.filter(l => l.fb_posted && !l.is_sold && l.listing_url);
 
     if (toCheck.length === 0) {
-      console.log('OrbitAds: No active posted listings to check');
+      console.log('DealersOrbit: No active posted listings to check');
       await chrome.storage.local.set({ last_sold_check: now });
       return { sold_ids: [] };
     }
 
-    console.log(`OrbitAds: Checking ${toCheck.length} listings for sold status`);
+    console.log(`DealersOrbit: Checking ${toCheck.length} listings for sold status`);
 
     const soldIds    = [];
     const checkedIds = [];
 
     for (const listing of toCheck) {
       const result = await checkListingUrl(listing.listing_url);
-      console.log(`OrbitAds: Listing ${listing.id} (${listing.year} ${listing.make} ${listing.model}) — ${result.reason}`);
+      console.log(`DealersOrbit: Listing ${listing.id} (${listing.year} ${listing.make} ${listing.model}) — ${result.reason}`);
 
       if (result.reason === 'timeout' || result.reason.startsWith('error')) continue;
 
@@ -1225,12 +1225,12 @@ async function runDailySoldCheck(force = false) {
         body: JSON.stringify({ sold_ids: soldIds, checked_ids: checkedIds }),
       });
       if (!reportResp.ok) {
-        console.log('OrbitAds: Failed to report sold status:', reportResp.status);
+        console.log('DealersOrbit: Failed to report sold status:', reportResp.status);
       }
     }
 
     if (soldIds.length > 0) {
-      console.log(`OrbitAds: ${soldIds.length} vehicle(s) detected as sold!`);
+      console.log(`DealersOrbit: ${soldIds.length} vehicle(s) detected as sold!`);
 
       const { sold_notifications = [] } = await chrome.storage.local.get('sold_notifications');
       const newSold = soldIds.filter(id => !sold_notifications.includes(id));
@@ -1243,14 +1243,14 @@ async function runDailySoldCheck(force = false) {
         chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
       }
     } else {
-      console.log('OrbitAds: All posted listings still active');
+      console.log('DealersOrbit: All posted listings still active');
     }
 
     await chrome.storage.local.set({ last_sold_check: now });
     return { sold_ids: soldIds };
 
   } catch (err) {
-    console.error('OrbitAds: Sold check error:', err);
+    console.error('DealersOrbit: Sold check error:', err);
     return { sold_ids: [] };
   }
 }

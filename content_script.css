@@ -1,6 +1,6 @@
-/* OrbitAds injected button styles */
+/* DealersOrbit injected button styles */
 
-.orbitads-import-btn {
+.dealersorbit-import-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -23,16 +23,16 @@
     position: relative;
 }
 
-.orbitads-import-btn:hover {
+.dealersorbit-import-btn:hover {
     background: #1e40af !important;
     transform: translateY(-1px);
 }
 
-.orbitads-import-btn:active {
+.dealersorbit-import-btn:active {
     transform: translateY(0);
 }
 
-.orbitads-import-btn:disabled {
+.dealersorbit-import-btn:disabled {
     cursor: not-allowed;
     transform: none;
 }

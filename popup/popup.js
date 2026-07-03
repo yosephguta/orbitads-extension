@@ -1,5 +1,5 @@
 /**
- * OrbitAds Popup
+ * DealersOrbit Popup
  * ───────────────
  * Handles three states:
  *   1. Not logged in → show login form
@@ -156,12 +156,12 @@ function showSubscriptionOverlay(message_type) {
     past_due: {
       icon:    "💳",
       title:   "Payment Failed",
-      message: "We couldn't process your last payment. Please update your payment method to restore access to OrbitAds.",
+      message: "We couldn't process your last payment. Please update your payment method to restore access to DealersOrbit.",
     },
     cancelled: {
       icon:    "🔒",
       title:   "Subscription Cancelled",
-      message: "Your OrbitAds subscription has been cancelled. Reactivate your subscription to continue generating ads.",
+      message: "Your DealersOrbit subscription has been cancelled. Reactivate your subscription to continue generating ads.",
     },
   };
 
@@ -246,7 +246,7 @@ document.getElementById("soldModalContent")?.addEventListener("click", async (e)
   } catch (err) {
     btn.textContent = "✕";
     btn.disabled = false;
-    console.error("OrbitAds: Failed to clear sold flag:", err);
+    console.error("DealersOrbit: Failed to clear sold flag:", err);
   }
 });
 
@@ -428,7 +428,7 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
       reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
     }
 
-    console.log("OrbitAds: reviewPhotos for modal:", {
+    console.log("DealersOrbit: reviewPhotos for modal:", {
       exterior: reviewPhotos.exterior?.length,
       interior: reviewPhotos.interior?.length,
       additional: reviewPhotos.additional?.length,
@@ -1429,7 +1429,7 @@ async function generateMarketplaceDescription(theme) {
     if (descEl) descEl.value = data.description || '';
 
   } catch (err) {
-    console.error('OrbitAds: MP description generation failed:', err);
+    console.error('DealersOrbit: MP description generation failed:', err);
     if (descEl) {
       const v     = mpModalJob.vehicle;
       const title = [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ');
@@ -1539,7 +1539,7 @@ async function init() {
       await chrome.tabs.create({ url: 'https://www.facebook.com/marketplace/create/vehicle' });
 
     } catch (err) {
-      console.error('OrbitAds: Marketplace post error:', err);
+      console.error('DealersOrbit: Marketplace post error:', err);
       alert('Failed to open Marketplace. Please try again.');
     } finally {
       mpPostBtn.textContent = originalText;
@@ -1588,7 +1588,7 @@ async function init() {
           },
         });
         document.getElementById("fbPostModal").style.display = "none";
-        chrome.tabs.create({ url: "https://www.facebook.com/groups/feed/?orbitads_groups=1" });
+        chrome.tabs.create({ url: "https://www.facebook.com/groups/feed/?dealersorbit_groups=1" });
       } else {
         await chrome.storage.local.set({
           fb_post: {
@@ -1601,7 +1601,7 @@ async function init() {
           },
         });
         document.getElementById("fbPostModal").style.display = "none";
-        chrome.tabs.create({ url: "https://www.facebook.com/?orbitads_post=1" });
+        chrome.tabs.create({ url: "https://www.facebook.com/?dealersorbit_post=1" });
       }
     } catch (err) {
       console.error('FB Post submit error:', err);
@@ -1671,7 +1671,7 @@ async function restartPollingIfNeeded() {
 
   if (!activeJob) return;
 
-  console.log('OrbitAds: Found in-progress job on popup open, checking status...');
+  console.log('DealersOrbit: Found in-progress job on popup open, checking status...');
 
   const { token } = await chrome.storage.local.get('token');
   if (!token || !activeJob.api_job_id) return;
@@ -1684,7 +1684,7 @@ async function restartPollingIfNeeded() {
     if (!resp.ok) return;
     const pollData = await resp.json();
 
-    console.log('OrbitAds: Backend job status:', pollData.status);
+    console.log('DealersOrbit: Backend job status:', pollData.status);
 
     if (pollData.status === 'completed') {
       activeJob.status     = 'completed';
@@ -1719,7 +1719,7 @@ async function restartPollingIfNeeded() {
         // ignore — listing may already exist
       }
 
-      console.log('OrbitAds: Job completed while extension was closed — updated');
+      console.log('DealersOrbit: Job completed while extension was closed — updated');
       renderQueue();
 
     } else if (pollData.status === 'failed') {
@@ -1732,11 +1732,11 @@ async function restartPollingIfNeeded() {
 
     } else {
       // Still processing — tell background.js to restart polling
-      console.log('OrbitAds: Job still processing — restarting background poll');
+      console.log('DealersOrbit: Job still processing — restarting background poll');
       chrome.runtime.sendMessage({ type: 'RESTART_POLLING', job_id: activeJob.id });
     }
   } catch (err) {
-    console.error('OrbitAds: Status check failed:', err);
+    console.error('DealersOrbit: Status check failed:', err);
   }
 }
 
@@ -1913,7 +1913,7 @@ async function loadRecentAds() {
         }
       }
     } catch (err) {
-      if (err.message !== "session_expired") console.error("OrbitAds: listings fetch failed:", err);
+      if (err.message !== "session_expired") console.error("DealersOrbit: listings fetch failed:", err);
     }
   }
 
@@ -3245,7 +3245,7 @@ generateBtn.addEventListener("click", async () => {
 // ── Facebook listing button ───────────────────────────────────
 
 facebookBtn.addEventListener("click", async () => {
-  console.log("OrbitAds: reviewPhotos state:", {
+  console.log("DealersOrbit: reviewPhotos state:", {
     exterior: reviewPhotos.exterior?.length,
     interior: reviewPhotos.interior?.length,
     additional: reviewPhotos.additional?.length,
@@ -3270,7 +3270,7 @@ facebookBtn.addEventListener("click", async () => {
       ...(sourcePhotos?.additional || []),
     ];
 
-    console.log("OrbitAds: Reviewed photos for FB:", reviewedPhotosList.length);
+    console.log("DealersOrbit: Reviewed photos for FB:", reviewedPhotosList.length);
 
     const resp = await apiFetch(`${API_BASE}/listings/generate`, {
       method: "POST",
@@ -3309,7 +3309,7 @@ facebookBtn.addEventListener("click", async () => {
     });
 
     const videoUrl = completedJob?.result_url || null;
-    console.log("OrbitAds: Found completed job:", !!completedJob, "video_url:", videoUrl);
+    console.log("DealersOrbit: Found completed job:", !!completedJob, "video_url:", videoUrl);
 
     await chrome.storage.local.set({
       fb_listing: {

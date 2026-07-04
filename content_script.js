@@ -326,10 +326,14 @@ function scrapeWithConfig(card, config) {
   const listingUrl = href.startsWith('http') ? href :
     window.location.origin + href;
 
+  // make: try dedicated make selector first, fall back to parsing title text
+  const titleText = getText(ext.title.selector) || '';
+  const makeText  = ext.make?.selector ? (getText(ext.make.selector) || titleText) : titleText;
+
   return {
     vin: getAttr(ext.vin.selector, ext.vin.attribute),
-    year: extractYear(getText(ext.title.selector) || ''),
-    make: extractMake(getText(ext.title.selector) || ''),
+    year: extractYear(titleText),
+    make: extractMake(makeText),
     model: extractModel(card),
     trim: extractTrim(card),
     price: getText(ext.price.selector),
@@ -1776,13 +1780,14 @@ async function init() {
 
   // Use dealership config
   const url = window.location.pathname;
-  const isInventory = config.inventory_page.url_patterns
-    .some(p => url.includes(p));
+  const cards = Array.from(
+    document.querySelectorAll(config.inventory_page.card_selector)
+  );
+  // URL pattern match OR card selector finds multiple elements on page
+  const isInventory = config.inventory_page.url_patterns.some(p => url.includes(p))
+    || cards.length >= 2;
 
   if (isInventory) {
-    const cards = Array.from(
-      document.querySelectorAll(config.inventory_page.card_selector)
-    );
     if (cards.length > 0) {
       injectConfigDrivenButtons(cards, config);
       const observer = new MutationObserver(() => {

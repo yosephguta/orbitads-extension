@@ -222,7 +222,8 @@ function adaptBackendConfig(aiConfig, domain) {
       card_selector: inv.vehicle_cards || 'li.vehicle-card',
       extractors: {
         vin:     { type: 'text',   selector: fields.vin          || null,   attribute: null },
-        title:   { type: 'text',   selector: fields.year         || fields.make || null },
+        title:   { type: 'text',   selector: fields.year         || fields.make || fields.model || null },
+        make:    { type: 'text',   selector: fields.make         || fields.model || null },
         price:   { type: 'text',   selector: fields.price        || null },
         mileage: { type: 'text',   selector: fields.mileage      || null,   filter: 'miles' },
         link:    { type: 'href',   selector: fields.listing_url  || 'a' },
@@ -553,7 +554,11 @@ async function enrichSingleVehicle(vehicle) {
         args:   [detailPageSelectors],
       });
 
-      const detailData = results?.[0]?.result;
+      const scriptResult = results?.[0];
+      if (scriptResult?.error) {
+        console.warn(`DealersOrbit: executeScript error for ${vehicle.model}:`, scriptResult.error);
+      }
+      const detailData = scriptResult?.result;
       console.log(`DealersOrbit: Detail page data for ${vehicle.model}:`, detailData);
 
       if (detailData) {
@@ -587,6 +592,15 @@ async function enrichSingleVehicle(vehicle) {
           vehicle.body_style = detailData.body_style || vehicle.body_style || null;
           console.log(`DealersOrbit: Colors — exterior: ${vehicle.exterior_color}, interior: ${vehicle.interior_color}`);
           console.log(`DealersOrbit: Body style — ${vehicle.body_style}`);
+        }
+      }
+
+      // VIN fallback — extract from listing URL if still missing (many sites embed VIN in URL)
+      if (!vehicle.vin && vehicle.listing_url) {
+        const vinInUrl = vehicle.listing_url.match(/\b([A-HJ-NPR-Z0-9]{17})\b/i);
+        if (vinInUrl) {
+          vehicle.vin = vinInUrl[1].toUpperCase();
+          console.log(`DealersOrbit: VIN extracted from URL: ${vehicle.vin}`);
         }
       }
 
@@ -746,6 +760,10 @@ function extractDetailPageData(selectors) {
 
   const skipPatterns = ['thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 'badge', 'placeholder', '1x1', 'spacer'];
 
+  // Safe wrappers — invalid CSS selectors (e.g. jQuery :contains()) throw in querySelector
+  const safeQuery  = (sel) => { try { return sel ? document.querySelector(sel) : null; } catch (e) { return null; } };
+  const safeQueryAll = (sel) => { try { return sel ? Array.from(document.querySelectorAll(sel)) : []; } catch (e) { return []; } };
+
   // ── Trigger full carousel load ────────────────────────────
   const nextBtns = document.querySelectorAll(
     '.slick-next, [aria-label="Next Photo"], [title="Next Photo"], ' +
@@ -755,7 +773,7 @@ function extractDetailPageData(selectors) {
   if (nextBtns.length > 0) {
     for (let i = 0; i < totalSlides + 2; i++) nextBtns[0].click();
   }
-  document.querySelectorAll('img[data-src], img[data-lazy-src], img[data-lazysrc]').forEach(img => {
+  safeQueryAll('img[data-src], img[data-lazy-src], img[data-lazysrc]').forEach(img => {
     if (img.dataset.src) img.src = img.dataset.src;
     if (img.dataset.lazySrc) img.src = img.dataset.lazySrc;
     if (img.dataset.lazysrc) img.src = img.dataset.lazysrc;
@@ -764,13 +782,11 @@ function extractDetailPageData(selectors) {
   // ── VIN ───────────────────────────────────────────────────
   let vin = null;
   if (selectors.vin) {
-    vin = document.querySelector(selectors.vin)?.textContent?.trim() || null;
+    vin = safeQuery(selectors.vin)?.textContent?.trim() || null;
     if (vin) vin = (vin.match(/[A-HJ-NPR-Z0-9]{17}/i) || [])[0] || null;
   }
   if (!vin) {
-    const vinEl = document.querySelector('[data-vin]') ||
-                  document.querySelector('.vin-value') ||
-                  document.querySelector('[class*="vin"]');
+    const vinEl = safeQuery('[data-vin]') || safeQuery('.vin-value') || safeQuery('[class*="vin"]');
     vin = vinEl?.getAttribute('data-vin') || vinEl?.innerText?.match(/[A-HJ-NPR-Z0-9]{17}/i)?.[0] || null;
   }
   if (!vin) {
@@ -778,36 +794,35 @@ function extractDetailPageData(selectors) {
   }
 
   // ── Title ─────────────────────────────────────────────────
-  const titleEl = document.querySelector('h1, .vehicle-title, [class*="vehicle-name"]');
+  const titleEl = safeQuery('h1, .vehicle-title, [class*="vehicle-name"]');
   const titleText = titleEl?.innerText?.trim() || document.title || '';
 
   // ── Price ─────────────────────────────────────────────────
   let price = null;
   if (selectors.sale_price) {
-    price = document.querySelector(selectors.sale_price)?.textContent?.trim() || null;
+    price = safeQuery(selectors.sale_price)?.textContent?.trim() || null;
   }
   if (!price) {
-    // JBA fallback
-    price = document.querySelector('dd.askingPrice .price-value')?.textContent?.trim() ||
-            document.querySelector('dd.final-price.internetPrice .price-value')?.textContent?.trim() || null;
+    price = safeQuery('dd.askingPrice .price-value')?.textContent?.trim() ||
+            safeQuery('dd.final-price.internetPrice .price-value')?.textContent?.trim() || null;
   }
 
   // ── Processing fee ────────────────────────────────────────
   let processingFee = null;
   if (selectors.processing_fee) {
-    processingFee = document.querySelector(selectors.processing_fee)?.textContent?.trim() || null;
+    processingFee = safeQuery(selectors.processing_fee)?.textContent?.trim() || null;
   }
   if (!processingFee) {
-    processingFee = document.querySelector('dd.ABCRule .price-value')?.textContent?.trim() || null;
+    processingFee = safeQuery('dd.ABCRule .price-value')?.textContent?.trim() || null;
   }
 
   // ── Mileage ───────────────────────────────────────────────
   let mileage = null;
   if (selectors.mileage) {
-    mileage = document.querySelector(selectors.mileage)?.textContent?.trim() || null;
+    mileage = safeQuery(selectors.mileage)?.textContent?.trim() || null;
   }
   if (!mileage) {
-    const mileageEls = Array.from(document.querySelectorAll('.highlight-badge, [class*="mileage"], [class*="miles"]'));
+    const mileageEls = safeQueryAll('.highlight-badge, [class*="mileage"], [class*="miles"]');
     mileage = mileageEls.find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
   }
 
@@ -817,20 +832,20 @@ function extractDetailPageData(selectors) {
   let bodyStyle = null;
 
   if (selectors.exterior_color) {
-    exteriorColor = document.querySelector(selectors.exterior_color)?.textContent?.trim() || null;
+    exteriorColor = safeQuery(selectors.exterior_color)?.textContent?.trim() || null;
   }
   if (selectors.interior_color) {
-    interiorColor = document.querySelector(selectors.interior_color)?.textContent?.trim() || null;
+    interiorColor = safeQuery(selectors.interior_color)?.textContent?.trim() || null;
   }
   if (selectors.body_style) {
-    const raw = document.querySelector(selectors.body_style)?.textContent?.trim() || null;
+    const raw = safeQuery(selectors.body_style)?.textContent?.trim() || null;
     bodyStyle = raw ? raw.split('/')[0].trim() : null;
   }
 
   // JBA fallback — dl.dl-horizontal spec table (runs if any field still missing)
   if (!exteriorColor || !interiorColor || !bodyStyle) {
     let currentLabel = null;
-    document.querySelectorAll('dl.dl-horizontal dt, dl.dl-horizontal dd').forEach(el => {
+    safeQueryAll('dl.dl-horizontal dt, dl.dl-horizontal dd').forEach(el => {
       if (el.tagName === 'DT') {
         currentLabel = el.textContent.trim().toLowerCase();
       } else if (el.tagName === 'DD') {
@@ -852,9 +867,8 @@ function extractDetailPageData(selectors) {
   // Method 1: config selector
   let photosBySelector = [];
   if (selectors.photos) {
-    const photoEls = document.querySelectorAll(selectors.photos);
-    photosBySelector = Array.from(photoEls)
-      .map(img => img.getAttribute('data-src') || img.src || null)
+    photosBySelector = safeQueryAll(selectors.photos)
+      .map(img => (img.getAttribute('data-src') || img.src || '').replace(/\?.*$/, ''))
       .filter(src => src && src.startsWith('http') && !skipPatterns.some(p => src.toLowerCase().includes(p)))
       .filter((src, i, arr) => arr.indexOf(src) === i)
       .slice(0, 40);
@@ -876,8 +890,8 @@ function extractDetailPageData(selectors) {
   let photos = photosBySelector.length >= photosByCDN.length ? photosBySelector : photosByCDN;
 
   if (!photos.length) {
-    photos = Array.from(document.querySelectorAll('img'))
-      .map(img => img.getAttribute('data-src') || img.src || '')
+    photos = safeQueryAll('img')
+      .map(img => (img.getAttribute('data-src') || img.src || '').replace(/\?.*$/, ''))
       .filter(src => src.startsWith('http') && src.match(/\.(jpg|jpeg|webp|png)/i))
       .filter(src => !skipPatterns.some(p => src.toLowerCase().includes(p)))
       .filter((src, i, arr) => arr.indexOf(src) === i)

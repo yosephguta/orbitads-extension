@@ -613,7 +613,7 @@ async function checkAndStartOnboarding(user) {
     `We'll configure ${domain} so your Import buttons appear. This only happens once.`;
 
   // Check if current tab is on the right domain
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const tabDomain = tab?.url ? new URL(tab.url).hostname.replace(/^www\./, '') : '';
   const onRightPage = tabDomain === domain || tabDomain.endsWith('.' + domain);
 

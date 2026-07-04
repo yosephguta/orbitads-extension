@@ -300,8 +300,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const { token } = await chrome.storage.local.get('token');
         if (!token) { sendResponse({ success: false, error: 'Not logged in.' }); return; }
 
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) { sendResponse({ success: false, error: 'No active tab found.' }); return; }
+        // lastFocusedWindow gets the browser tab behind the popup
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab?.id) { sendResponse({ success: false, error: 'No active tab found. Please open your inventory page in a browser tab first.' }); return; }
 
         // Capture first vehicle card from the inventory page
         const cardResults = await chrome.scripting.executeScript({

@@ -194,13 +194,88 @@ function buildConfig(dealerConfig) {
   };
 }
 
+// ── Adapt AI-generated backend config to content_script format ──
+function adaptBackendConfig(aiConfig, domain) {
+  const inv    = aiConfig.inventory   || {};
+  const fields = inv.fields           || {};
+  const dp     = aiConfig.detail_page || {};
+
+  // Include both AI url_pattern and common inventory path patterns so
+  // isInventory check in content_script passes reliably.
+  const urlPatterns = [
+    inv.url_pattern,
+    '/used-inventory', '/new-inventory', '/certified-inventory',
+    '/pre-owned', '/inventory', '/used/', '/new/', '/certified/',
+  ].filter(Boolean);
+
+  return {
+    dealership_name: domain,
+    provider: aiConfig.platform || 'ai_generated',
+    photo_hints: {
+      exterior_position: 'first',
+      exterior_count: aiConfig.photo_hints?.exterior_count || null,
+      interior_position: 'after_exterior',
+    },
+    sold_indicators: aiConfig.sold_indicators || [],
+    inventory_page: {
+      url_patterns: urlPatterns,
+      card_selector: inv.vehicle_cards || 'li.vehicle-card',
+      extractors: {
+        vin:     { type: 'text',   selector: fields.vin          || null,   attribute: null },
+        title:   { type: 'text',   selector: fields.year         || fields.make || null },
+        price:   { type: 'text',   selector: fields.price        || null },
+        mileage: { type: 'text',   selector: fields.mileage      || null,   filter: 'miles' },
+        link:    { type: 'href',   selector: fields.listing_url  || 'a' },
+        photos:  { type: 'images', selector: fields.image        || 'img',  strip_params: true },
+      },
+    },
+    detail_page: {
+      url_patterns: [],
+      extractors: {
+        vin:     { type: 'text',   selector: dp.vin        || null },
+        price:   { type: 'text',   selector: dp.sale_price || null },
+        mileage: { type: 'text',   selector: dp.mileage    || null },
+        photos:  { type: 'images', selector: dp.photos     || 'img', strip_params: true },
+      },
+    },
+  };
+}
+
 // ── Message handler ───────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_CONFIG") {
-    const config = getConfigForDomain(message.domain);
-    console.log(`DealersOrbit: Config for ${message.domain}:`, config?.name || "none");
-    sendResponse({ config });
+    (async () => {
+      const domain = message.domain;
+
+      // 1. Check backend for AI-generated active config (always hits prod — configs live on EC2)
+      try {
+        const configUrl = `https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`;
+        console.log(`DealersOrbit: Fetching backend config from ${configUrl}`);
+        const resp = await fetch(configUrl);
+        const data = await resp.json();
+        console.log(`DealersOrbit: Backend response:`, data.found, data.platform);
+        if (resp.ok && data.found && data.config) {
+          console.log(`DealersOrbit: Using backend config for ${domain} (platform: ${data.platform})`);
+          sendResponse({ config: adaptBackendConfig(data.config, domain), source: "backend" });
+          return;
+        }
+      } catch (err) {
+        console.log("DealersOrbit: Backend config lookup failed, falling back:", err.message);
+      }
+
+      // 2. Fall back to hardcoded dealership_config.js
+      const config = getConfigForDomain(domain);
+      if (config) {
+        console.log(`DealersOrbit: Using hardcoded config for ${domain}`);
+        sendResponse({ config, source: "hardcoded" });
+        return;
+      }
+
+      // 3. No config found
+      console.log(`DealersOrbit: No config for ${domain} — using generic scraper`);
+      sendResponse({ config: null, source: "generic" });
+    })();
     return true;
   }
 
@@ -415,6 +490,50 @@ async function enrichSingleVehicle(vehicle) {
   console.log("DealersOrbit: enrichSingleVehicle:", vehicle.model);
   console.log("DealersOrbit: listing_url:", vehicle.listing_url);
 
+  // ── Resolve config for this domain (one fetch, used for both selectors + photo hints) ──
+  let detailPageSelectors = {};
+  let photoHintsFromConfig = null;
+  if (vehicle.listing_url) {
+    try {
+      const domain = new URL(vehicle.listing_url).hostname;
+
+      // Backend config first
+      const cfgResp = await fetch(
+        `https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`
+      );
+      if (cfgResp.ok) {
+        const cfgData = await cfgResp.json();
+        if (cfgData.found && cfgData.config) {
+          if (cfgData.config.detail_page) {
+            detailPageSelectors = cfgData.config.detail_page;
+            console.log(`DealersOrbit: Using backend detail selectors for ${domain}`);
+          }
+          if (cfgData.config.photo_hints?.exterior_count) {
+            photoHintsFromConfig = {
+              exterior_position: 'first',
+              exterior_count: cfgData.config.photo_hints.exterior_count,
+              interior_position: 'after_exterior',
+            };
+          }
+        }
+      }
+
+      // Fall back to hardcoded config if backend had nothing
+      if (!Object.keys(detailPageSelectors).length) {
+        const hardcoded = getConfigForDomain(domain);
+        if (hardcoded?.detail_page) {
+          detailPageSelectors = hardcoded.detail_page;
+          console.log(`DealersOrbit: Using hardcoded detail selectors for ${domain}`);
+        }
+        if (!photoHintsFromConfig && hardcoded?.photo_hints) {
+          photoHintsFromConfig = hardcoded.photo_hints;
+        }
+      }
+    } catch (err) {
+      console.log('DealersOrbit: Could not resolve config:', err.message);
+    }
+  }
+
   // ── Step 1: Scrape detail page ───────────────────────────
   if (vehicle.listing_url) {
     let tab = null;
@@ -430,7 +549,8 @@ async function enrichSingleVehicle(vehicle) {
 
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: extractDetailPageData,
+        func:   extractDetailPageData,
+        args:   [detailPageSelectors],
       });
 
       const detailData = results?.[0]?.result;
@@ -470,12 +590,8 @@ async function enrichSingleVehicle(vehicle) {
         }
       }
 
-      // Apply photo hints
-      const domain = new URL(vehicle.listing_url).hostname;
-      const domainConfig = getConfigForDomain(domain);
-      vehicle.photos_for_video = applyPhotoHints(
-        vehicle.photos || [], domainConfig?.photo_hints
-      );
+      // Apply photo hints — already resolved above, no second fetch needed
+      vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], photoHintsFromConfig);
       console.log(`DealersOrbit: Selected ${vehicle.photos_for_video.length} photos using hints`);
 
     } catch (err) {
@@ -625,26 +741,20 @@ async function classifySingleVehicle(vehicle, queueItemId) {
  * It runs in the context of the dealership website.
  * Must be self-contained — no references to variables outside this function.
  */
-function extractDetailPageData() {
+function extractDetailPageData(selectors) {
+  selectors = selectors || {};
+
+  const skipPatterns = ['thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 'badge', 'placeholder', '1x1', 'spacer'];
+
   // ── Trigger full carousel load ────────────────────────────
-  // Click through all carousel slides to force lazy loading
   const nextBtns = document.querySelectorAll(
     '.slick-next, [aria-label="Next Photo"], [title="Next Photo"], ' +
     '.carousel-next, .gallery-next, button[class*="next"]'
   );
-
-  const totalSlides = document.querySelectorAll(
-    '.slick-slide:not(.slick-cloned)'
-  ).length || 0;
-
-  // Click next button enough times to cycle through all slides
+  const totalSlides = document.querySelectorAll('.slick-slide:not(.slick-cloned)').length || 0;
   if (nextBtns.length > 0) {
-    for (let i = 0; i < totalSlides + 2; i++) {
-      nextBtns[0].click();
-    }
+    for (let i = 0; i < totalSlides + 2; i++) nextBtns[0].click();
   }
-
-  // Also trigger lazy load on all images with data-src
   document.querySelectorAll('img[data-src], img[data-lazy-src], img[data-lazysrc]').forEach(img => {
     if (img.dataset.src) img.src = img.dataset.src;
     if (img.dataset.lazySrc) img.src = img.dataset.lazySrc;
@@ -652,84 +762,129 @@ function extractDetailPageData() {
   });
 
   // ── VIN ───────────────────────────────────────────────────
-  const vinEl = document.querySelector('[data-vin]') ||
-    document.querySelector('.vin-value') ||
-    document.querySelector('[class*="vin"]');
-  const vinText = vinEl?.getAttribute('data-vin') ||
-    vinEl?.innerText?.match(/[A-HJ-NPR-Z0-9]{17}/i)?.[0];
-  const bodyVin = document.body.innerText.match(/\b([A-HJ-NPR-Z0-9]{17})\b/)?.[1];
-  const vin = vinText || bodyVin || null;
+  let vin = null;
+  if (selectors.vin) {
+    vin = document.querySelector(selectors.vin)?.textContent?.trim() || null;
+    if (vin) vin = (vin.match(/[A-HJ-NPR-Z0-9]{17}/i) || [])[0] || null;
+  }
+  if (!vin) {
+    const vinEl = document.querySelector('[data-vin]') ||
+                  document.querySelector('.vin-value') ||
+                  document.querySelector('[class*="vin"]');
+    vin = vinEl?.getAttribute('data-vin') || vinEl?.innerText?.match(/[A-HJ-NPR-Z0-9]{17}/i)?.[0] || null;
+  }
+  if (!vin) {
+    vin = (document.body.innerText.match(/\b([A-HJ-NPR-Z0-9]{17})\b/) || [])[1] || null;
+  }
 
   // ── Title ─────────────────────────────────────────────────
   const titleEl = document.querySelector('h1, .vehicle-title, [class*="vehicle-name"]');
-  const titleText = titleEl?.innerText?.trim() || '';
+  const titleText = titleEl?.innerText?.trim() || document.title || '';
 
-  // ── Full photo gallery ────────────────────────────────────
-  // Extract ALL photo URLs directly from page HTML source
-  // This gets all photos regardless of carousel state or lazy loading
+  // ── Price ─────────────────────────────────────────────────
+  let price = null;
+  if (selectors.sale_price) {
+    price = document.querySelector(selectors.sale_price)?.textContent?.trim() || null;
+  }
+  if (!price) {
+    // JBA fallback
+    price = document.querySelector('dd.askingPrice .price-value')?.textContent?.trim() ||
+            document.querySelector('dd.final-price.internetPrice .price-value')?.textContent?.trim() || null;
+  }
+
+  // ── Processing fee ────────────────────────────────────────
+  let processingFee = null;
+  if (selectors.processing_fee) {
+    processingFee = document.querySelector(selectors.processing_fee)?.textContent?.trim() || null;
+  }
+  if (!processingFee) {
+    processingFee = document.querySelector('dd.ABCRule .price-value')?.textContent?.trim() || null;
+  }
+
+  // ── Mileage ───────────────────────────────────────────────
+  let mileage = null;
+  if (selectors.mileage) {
+    mileage = document.querySelector(selectors.mileage)?.textContent?.trim() || null;
+  }
+  if (!mileage) {
+    const mileageEls = Array.from(document.querySelectorAll('.highlight-badge, [class*="mileage"], [class*="miles"]'));
+    mileage = mileageEls.find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
+  }
+
+  // ── Colors + body style ───────────────────────────────────
+  let exteriorColor = null;
+  let interiorColor = null;
+  let bodyStyle = null;
+
+  if (selectors.exterior_color) {
+    exteriorColor = document.querySelector(selectors.exterior_color)?.textContent?.trim() || null;
+  }
+  if (selectors.interior_color) {
+    interiorColor = document.querySelector(selectors.interior_color)?.textContent?.trim() || null;
+  }
+  if (selectors.body_style) {
+    const raw = document.querySelector(selectors.body_style)?.textContent?.trim() || null;
+    bodyStyle = raw ? raw.split('/')[0].trim() : null;
+  }
+
+  // JBA fallback — dl.dl-horizontal spec table (runs if any field still missing)
+  if (!exteriorColor || !interiorColor || !bodyStyle) {
+    let currentLabel = null;
+    document.querySelectorAll('dl.dl-horizontal dt, dl.dl-horizontal dd').forEach(el => {
+      if (el.tagName === 'DT') {
+        currentLabel = el.textContent.trim().toLowerCase();
+      } else if (el.tagName === 'DD') {
+        if (!exteriorColor && currentLabel?.includes('exterior color')) {
+          exteriorColor = el.querySelector('span:last-child')?.textContent.trim() || el.textContent.trim() || null;
+        } else if (!interiorColor && currentLabel?.includes('interior color')) {
+          interiorColor = el.querySelector('span:last-child')?.textContent.trim() || el.textContent.trim() || null;
+        } else if (!bodyStyle && currentLabel?.includes('body')) {
+          const fullText = el.querySelector('span')?.textContent.trim() || el.textContent.trim() || '';
+          bodyStyle = fullText.split('/')[0].trim() || null;
+        }
+      }
+    });
+  }
+
+  // ── Photos ────────────────────────────────────────────────
+  // Run all methods and keep whichever yields the most photos
+
+  // Method 1: config selector
+  let photosBySelector = [];
+  if (selectors.photos) {
+    const photoEls = document.querySelectorAll(selectors.photos);
+    photosBySelector = Array.from(photoEls)
+      .map(img => img.getAttribute('data-src') || img.src || null)
+      .filter(src => src && src.startsWith('http') && !skipPatterns.some(p => src.toLowerCase().includes(p)))
+      .filter((src, i, arr) => arr.indexOf(src) === i)
+      .slice(0, 40);
+  }
+
+  // Method 2: CDN URL extraction from raw HTML (Dealer Inspire / pictures.dealer.com)
   const html = document.documentElement.innerHTML;
-
-  // Find all pictures.dealer.com URLs in the raw HTML
-  const allMatches = html.match(/https:\/\/pictures\.dealer\.com\/[^"'\s>\\]+/g) || [];
-
-  const photoSources = new Set();
-  allMatches.forEach(url => {
-    // Clean the URL — strip query params and escape sequences
-    const clean = url
-      .replace(/\\u0026.*/, '')  // remove escaped ampersands and everything after
-      .replace(/\?.*/, '')        // remove query params
-      .replace(/\\.*/, '');       // remove any remaining escape sequences
-    if (clean && clean.match(/\.(jpg|jpeg|png|webp)$/i)) {
-      photoSources.add(clean);
-    }
+  const cdnMatches = html.match(/https:\/\/pictures\.dealer\.com\/[^"'\s>\\]+/g) || [];
+  const cdnSources = new Set();
+  cdnMatches.forEach(url => {
+    const clean = url.replace(/\\u0026.*/, '').replace(/\?.*/, '').replace(/\\.*/, '');
+    if (clean && clean.match(/\.(jpg|jpeg|png|webp)$/i)) cdnSources.add(clean);
   });
-
-  // Filter out thumbnails and junk
-  const skipPatterns = [
-    'thumb_', '/thumb/', 'thumbnail', 'logo', 'icon',
-    'badge', 'placeholder', '1x1', 'spacer'
-  ];
-  const photos = Array.from(photoSources)
+  const photosByCDN = Array.from(cdnSources)
     .filter(src => !skipPatterns.some(p => src.toLowerCase().includes(p)))
     .slice(0, 40);
 
-  // ── Price — JBA Price (includes processing fee) ───────────
-  const finalPriceEl = document.querySelector('dd.final-price.internetPrice .price-value');
-  const price        = finalPriceEl?.textContent?.trim() || null;
+  // Use whichever method found more photos; fall back to generic img scan
+  let photos = photosBySelector.length >= photosByCDN.length ? photosBySelector : photosByCDN;
 
-  // ── Mileage ───────────────────────────────────────────────
-  const mileageEls = Array.from(
-    document.querySelectorAll('.highlight-badge, [class*="mileage"], [class*="miles"]')
-  );
-  const mileage = mileageEls
-    .find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
+  if (!photos.length) {
+    photos = Array.from(document.querySelectorAll('img'))
+      .map(img => img.getAttribute('data-src') || img.src || '')
+      .filter(src => src.startsWith('http') && src.match(/\.(jpg|jpeg|webp|png)/i))
+      .filter(src => !skipPatterns.some(p => src.toLowerCase().includes(p)))
+      .filter((src, i, arr) => arr.indexOf(src) === i)
+      .slice(0, 40);
+  }
 
-  // ── Spec table (JBA dl-horizontal): colors + body style ─────
-  let exteriorColor = null;
-  let interiorColor = null;
-  let bodyStyle     = null;
-  let currentLabel  = null;
-
-  document.querySelectorAll('dl.dl-horizontal dt, dl.dl-horizontal dd').forEach(el => {
-    if (el.tagName === 'DT') {
-      currentLabel = el.textContent.trim().toLowerCase();
-    } else if (el.tagName === 'DD') {
-      if (currentLabel?.includes('exterior color')) {
-        exteriorColor = el.querySelector('span:last-child')?.textContent.trim() ||
-                        el.textContent.trim() || null;
-      } else if (currentLabel?.includes('interior color')) {
-        interiorColor = el.querySelector('span:last-child')?.textContent.trim() ||
-                        el.textContent.trim() || null;
-      } else if (currentLabel?.includes('body')) {
-        // e.g. "Coupe/4 seats" → "Coupe"
-        const fullText = el.querySelector('span')?.textContent.trim() ||
-                         el.textContent.trim() || '';
-        bodyStyle = fullText.split('/')[0].trim() || null;
-      }
-    }
-  });
-
-  return { vin, title: titleText, photos, price, mileage, exterior_color: exteriorColor, interior_color: interiorColor, body_style: bodyStyle };
+  return { vin, title: titleText, photos, price, processing_fee: processingFee, mileage, exterior_color: exteriorColor, interior_color: interiorColor, body_style: bodyStyle };
 }
 
 function waitForTabLoad(tabId) {

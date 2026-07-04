@@ -249,6 +249,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const domain = message.domain;
 
+      // Domain restriction — only serve config for user's registered dealership
+      const ADMIN_EMAILS = ['yoseph@jbakia.com', 'yosephfl@gmail.com'];
+      const { user } = await chrome.storage.local.get('user');
+      const isAdmin = ADMIN_EMAILS.includes(user?.email?.toLowerCase());
+
+      if (!isAdmin && user?.dealership_url) {
+        const userDomain = user.dealership_url.split('/')[0].replace(/^www\./, '');
+        const currentDomain = domain.replace(/^www\./, '');
+        if (currentDomain !== userDomain && !currentDomain.endsWith('.' + userDomain)) {
+          sendResponse({ config: null, source: 'restricted' });
+          return;
+        }
+      }
+
       // 1. Check backend for AI-generated active config (always hits prod — configs live on EC2)
       try {
         const configUrl = `https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`;
@@ -276,6 +290,112 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // 3. No config found
       console.log(`DealersOrbit: No config for ${domain} — using generic scraper`);
       sendResponse({ config: null, source: "generic" });
+    })();
+    return true;
+  }
+
+  if (message.type === "CAPTURE_CONFIG_HTML") {
+    (async () => {
+      try {
+        const { token } = await chrome.storage.local.get('token');
+        if (!token) { sendResponse({ success: false, error: 'Not logged in.' }); return; }
+
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ success: false, error: 'No active tab found.' }); return; }
+
+        // Capture first vehicle card from the inventory page
+        const cardResults = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const SELECTORS = [
+              '[data-vehicle]','[data-vehicle-id]','[data-listing-id]','[data-vin]',
+              '.vehicle-card','.inventory-listing-item','.result-wrap','.listing-item',
+              '.ddc-item-info-wrapper','[class*="vehicle-card"]','[class*="inventory-item"]',
+              '[class*="vehicle-listing"]','[class*="listing-item"]',
+              'article[class*="vehicle"]','li[class*="vehicle"]',
+            ];
+            for (const sel of SELECTORS) {
+              try {
+                const els = document.querySelectorAll(sel);
+                if (els.length < 2) continue;
+                const card = els[0];
+                const patterns = ['/used/', '/inventory/', '/vehicle', '/vdp/', '/cars/', '/used-', '/new/'];
+                let detailUrl = null;
+                for (const p of patterns) {
+                  const a = card.querySelector(`a[href*="${p}"]`);
+                  if (a?.href) { detailUrl = a.href; break; }
+                }
+                if (!detailUrl) {
+                  const a = Array.from(card.querySelectorAll('a[href]'))
+                    .find(a => a.href && a.href !== window.location.href && !a.href.includes('#'));
+                  if (a) detailUrl = a.href;
+                }
+                return { card_html: card.outerHTML, detail_url: detailUrl, selector: sel };
+              } catch (e) {}
+            }
+            return null;
+          },
+        });
+
+        const cardData = cardResults?.[0]?.result;
+        if (!cardData) {
+          sendResponse({ success: false, error: 'No vehicle cards found. Please navigate to your inventory page first.' });
+          return;
+        }
+
+        console.log(`DealersOrbit: Captured card HTML (${cardData.card_html.length} chars) with ${cardData.selector}`);
+
+        // Capture detail page HTML fragments
+        let detailHtml = null;
+        if (cardData.detail_url) {
+          let detailTab = null;
+          try {
+            detailTab = await chrome.tabs.create({ url: cardData.detail_url, active: false });
+            await waitForTabLoad(detailTab.id);
+            await sleep(3000);
+
+            const detailResults = await chrome.scripting.executeScript({
+              target: { tabId: detailTab.id },
+              func: () => {
+                const safeQ = (sel) => { try { return document.querySelector(sel); } catch (e) { return null; } };
+                const priceSels = ['#price-box','.vdp-price-box','.price-box','.pricing-detail','[class*="pricing"]','.vehicle-pricing','dl.pricing-detail','[class*="price-block"]'];
+                const specSels  = ['.basic-info-component','.vehicle-details','.specs-table','[class*="spec"]','dl.dl-horizontal','.vehicle-info','.vehicle-specs'];
+                const galSels   = ['.vdp-gallery','.media-gallery','[class*="gallery"]','.vehicle-photos','.photo-gallery'];
+                const fragments = [];
+                for (const sel of priceSels) { const el = safeQ(sel); if (el) { fragments.push(`<!-- PRICE SECTION -->\n${el.outerHTML}`); break; } }
+                for (const sel of specSels)  { const el = safeQ(sel); if (el) { fragments.push(`<!-- SPEC SECTION -->\n${el.outerHTML}`);  break; } }
+                for (const sel of galSels)   { const el = safeQ(sel); if (el) { fragments.push(`<!-- GALLERY -->\n${el.outerHTML}`);         break; } }
+                return fragments.join('\n\n') || null;
+              },
+            });
+            detailHtml = detailResults?.[0]?.result || null;
+            console.log(`DealersOrbit: Captured detail HTML (${detailHtml?.length || 0} chars)`);
+          } finally {
+            if (detailTab) try { await chrome.tabs.remove(detailTab.id); } catch (e) {}
+          }
+        }
+
+        // POST to backend
+        const resp = await fetch(`${API_BASE}/dealer-configs/generate-from-html`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ card_html: cardData.card_html, detail_html: detailHtml, source_url: tab.url }),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          sendResponse({ success: false, error: err.detail || 'Config generation failed.' });
+          return;
+        }
+
+        const result = await resp.json();
+        await chrome.storage.local.set({ dealer_configured: true, config_status: 'pending_review' });
+        sendResponse({ success: true, platform_id: result.platform_id });
+
+      } catch (err) {
+        console.error('DealersOrbit: CAPTURE_CONFIG_HTML failed:', err);
+        sendResponse({ success: false, error: err.message });
+      }
     })();
     return true;
   }

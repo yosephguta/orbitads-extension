@@ -583,6 +583,97 @@ signOutBtn?.addEventListener("click", async () => {
   showScreen(loginScreen);
 });
 
+// ── Onboarding ────────────────────────────────────────────────
+const ADMIN_EMAILS = ['yoseph@jbakia.com', 'yosephfl@gmail.com'];
+
+function showReviewBanner() {
+  const banner = document.getElementById('reviewBanner');
+  if (banner) banner.style.display = 'block';
+}
+
+async function checkAndStartOnboarding(user) {
+  if (!user?.dealership_url) return;
+  if (ADMIN_EMAILS.includes(user.email?.toLowerCase())) return;
+
+  const { dealer_configured, config_status } = await chrome.storage.local.get(['dealer_configured', 'config_status']);
+
+  if (dealer_configured) {
+    if (config_status === 'pending_review') showReviewBanner();
+    return;
+  }
+
+  // First time — show onboarding overlay
+  const overlay = document.getElementById('onboardingOverlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+
+  const domain = user.dealership_url.split('/')[0].replace(/^www\./, '');
+
+  document.getElementById('onboardingMessage').textContent =
+    `We'll configure ${domain} so your Import buttons appear. This only happens once.`;
+
+  // Check if current tab is on the right domain
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabDomain = tab?.url ? new URL(tab.url).hostname.replace(/^www\./, '') : '';
+  const onRightPage = tabDomain === domain || tabDomain.endsWith('.' + domain);
+
+  const openBtn      = document.getElementById('onboardingOpenBtn');
+  const configureBtn = document.getElementById('onboardingConfigureBtn');
+  const statusEl     = document.getElementById('onboardingStatus');
+
+  if (onRightPage) {
+    statusEl.textContent = `You're on ${tabDomain}. Ready to configure!`;
+    configureBtn.style.display = 'block';
+  } else {
+    statusEl.textContent = `Navigate to your inventory page first, then click the button below.`;
+    openBtn.style.display = 'block';
+    configureBtn.style.display = 'block';
+  }
+
+  openBtn.onclick = () => {
+    const url = user.dealership_url.startsWith('http') ? user.dealership_url : `https://${user.dealership_url}`;
+    chrome.tabs.create({ url });
+  };
+
+  configureBtn.onclick = () => startConfigCapture(user);
+  document.getElementById('onboardingRetryBtn').onclick = () => startConfigCapture(user);
+}
+
+async function startConfigCapture(user) {
+  const statusEl     = document.getElementById('onboardingStatus');
+  const spinnerEl    = document.getElementById('onboardingSpinner');
+  const openBtn      = document.getElementById('onboardingOpenBtn');
+  const configureBtn = document.getElementById('onboardingConfigureBtn');
+  const retryBtn     = document.getElementById('onboardingRetryBtn');
+
+  statusEl.textContent = 'Analyzing your inventory page… This only happens once.';
+  spinnerEl.style.display = 'block';
+  openBtn.style.display = 'none';
+  configureBtn.style.display = 'none';
+  retryBtn.style.display = 'none';
+
+  chrome.runtime.sendMessage({ type: 'CAPTURE_CONFIG_HTML' }, async (response) => {
+    spinnerEl.style.display = 'none';
+
+    if (response?.success) {
+      document.getElementById('onboardingIcon').textContent = '✅';
+      document.getElementById('onboardingTitle').textContent = 'Site Configured!';
+      statusEl.textContent =
+        'Your configuration is being reviewed. It may have minor issues for now but will be fully optimized within 24 hours. You\'re free to use it today.';
+      await chrome.storage.local.set({ dealer_configured: true, config_status: 'pending_review' });
+      setTimeout(() => {
+        document.getElementById('onboardingOverlay').style.display = 'none';
+        showReviewBanner();
+      }, 3500);
+    } else {
+      const err = response?.error || 'Setup failed. Please navigate to your inventory page and try again.';
+      statusEl.textContent = err;
+      retryBtn.style.display = 'block';
+      configureBtn.style.display = 'block';
+    }
+  });
+}
+
 async function loadTaglineSettings() {
   const { token } = await chrome.storage.local.get("token");
   if (!token) return;
@@ -1633,8 +1724,10 @@ async function init() {
     // Parse the response we already have — no second fetch needed.
     // Fall back to checkSubscriptionStatus() (cache) if the request failed.
     let subStatus = null;
+    let freshUser = user;
     if (meResp && meResp.ok) {
       const meData = await meResp.json();
+      freshUser = meData;
       userLanguage = meData.preferred_language || 'en';
       subStatus = {
         is_blocked:           meData.is_blocked || false,
@@ -1642,7 +1735,7 @@ async function init() {
         subscription_status:  meData.subscription_status,
         cached_at:            Date.now(),
       };
-      await chrome.storage.local.set({ subscription_cache: subStatus });
+      await chrome.storage.local.set({ subscription_cache: subStatus, user: meData });
     } else {
       subStatus = await checkSubscriptionStatus();
     }
@@ -1652,6 +1745,8 @@ async function init() {
       showSubscriptionOverlay(subStatus.subscription_message);
       return;
     }
+
+    await checkAndStartOnboarding(freshUser);
 
     renderQueue();
     await restartPollingIfNeeded();
@@ -1844,6 +1939,7 @@ loginBtn.addEventListener("click", async () => {
     renderQueue();
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
+    await checkAndStartOnboarding(user);
 
   } catch (err) {
     loginError.textContent = err.message;

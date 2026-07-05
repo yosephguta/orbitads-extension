@@ -350,7 +350,11 @@ function injectConfigDrivenButtons(cards, config) {
   cards.forEach(card => {
     if (card.querySelector(`.${BUTTON_CLASS}`)) return;
     const vehicleData = scrapeWithConfig(card, config);
-    if (!vehicleData.vin && !vehicleData.price) return;
+    // Require at minimum a valid detail page link — VIN/price can come from the VDP
+    const hasLink = vehicleData.listing_url &&
+      vehicleData.listing_url !== window.location.origin &&
+      vehicleData.listing_url !== window.location.href;
+    if (!hasLink && !vehicleData.vin && !vehicleData.price) return;
     const btn = createImportButton(vehicleData);
     card.setAttribute(INJECTED_ATTR, "true");
     const footer = card.querySelector('[class*="footer"],[class*="actions"],[class*="price"]');
@@ -407,13 +411,40 @@ function injectVdpButton(config) {
   let price = null;
   if (dp.price?.selector) price = getText(dp.price.selector);
   if (!price) {
-    // Final/internet price first (includes processing fee), then base asking price
-    const priceEl = safeQ('dd.final-price.internetPrice .price-value') ||
-                    safeQ('[class*="internet-price"] .price-value') ||
-                    safeQ('[class*="our-price"]') || safeQ('[class*="online-price"]') ||
-                    safeQ('dd.askingPrice .price-value') ||
-                    safeQ('[class*="sale-price"]') || safeQ('[class*="asking-price"]');
-    price = priceEl?.innerText?.trim() || null;
+    const xPrice = (el) => {
+      if (!el) return null;
+      const t = el.innerText?.trim() || '';
+      const m = t.match(/\$[\d,]+/);
+      return m ? m[0] : (t.length < 15 && /\d/.test(t) ? t : null);
+    };
+    // Final/internet price first
+    price = xPrice(safeQ('dd.final-price.internetPrice .price-value')) ||
+            xPrice(safeQ('dd[class*="internetPrice"] .price-value')) ||
+            xPrice(safeQ('[class*="internet-price"] .price-value')) ||
+            xPrice(safeQ('[class*="our-price"]')) ||
+            xPrice(safeQ('[class*="online-price"]'));
+
+    // Label-scan: find final price by reading dt label text
+    if (!price) {
+      const FINAL_KW = ['freight', 'destination', 'internet price', 'our price',
+        'online price', 'total price', 'final price', 'dealer price'];
+      const labels = safeQAll('dl dt, dl th');
+      for (const label of labels) {
+        const t = label.innerText?.toLowerCase() || '';
+        if (FINAL_KW.some(kw => t.includes(kw))) {
+          const sib = label.nextElementSibling;
+          const p = xPrice(sib?.querySelector?.('.price-value') || sib);
+          if (p) { price = p; break; }
+        }
+      }
+    }
+
+    // Last resort
+    if (!price) {
+      price = xPrice(safeQ('dd.askingPrice .price-value')) ||
+              xPrice(safeQ('[class*="sale-price"]')) ||
+              xPrice(safeQ('[class*="asking-price"]'));
+    }
   }
 
   // ── Mileage ───────────────────────────────────────────────────
@@ -1907,19 +1938,32 @@ async function init() {
   const isInventory = hasMultipleCards ||
     (!onVdp && config.inventory_page.url_patterns.some(p => url.includes(p)));
 
+  function startInventoryMode(cfg) {
+    const sel = cfg.inventory_page.card_selector;
+    const existing = Array.from(document.querySelectorAll(sel));
+    if (existing.length > 0) injectConfigDrivenButtons(existing, cfg);
+    const observer = new MutationObserver(() => {
+      injectConfigDrivenButtons(Array.from(document.querySelectorAll(sel)), cfg);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
   if (isInventory) {
-    if (cards.length > 0) {
-      injectConfigDrivenButtons(cards, config);
-      const observer = new MutationObserver(() => {
-        const newCards = Array.from(
-          document.querySelectorAll(config.inventory_page.card_selector)
-        );
-        injectConfigDrivenButtons(newCards, config);
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-    }
+    startInventoryMode(config);
   } else if (onVdp) {
     injectVdpButton(config);
+  } else {
+    // Cards may not have loaded yet (JS-heavy new car pages) — retry after 3s
+    setTimeout(() => {
+      const lateCards = Array.from(
+        document.querySelectorAll(config.inventory_page.card_selector)
+      );
+      if (lateCards.length >= 2) {
+        startInventoryMode(config);
+      } else if (isVdpPage()) {
+        injectVdpButton(config);
+      }
+    }, 3000);
   }
 }
 

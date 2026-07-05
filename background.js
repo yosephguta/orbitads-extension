@@ -613,6 +613,12 @@ async function enrichAndQueue(vehicle) {
   }
 }
 
+function isNewCarUrl(url) {
+  if (!url) return false;
+  const path = new URL(url).pathname.toLowerCase();
+  return /\/new[-/]|\/exotic-new\/|\/new-inventory\/|\/new-vehicles\/|\/new-cars\//.test(path);
+}
+
 async function enrichSingleVehicle(vehicle) {
   console.log("DealersOrbit: enrichSingleVehicle:", vehicle.model);
   console.log("DealersOrbit: listing_url:", vehicle.listing_url);
@@ -684,6 +690,11 @@ async function enrichSingleVehicle(vehicle) {
     if (!vehicle.vin && vehicle.listing_url) {
       const vinInUrl = vehicle.listing_url.match(/\b([A-HJ-NPR-Z0-9]{17})\b/i);
       if (vinInUrl) vehicle.vin = vinInUrl[1].toUpperCase();
+    }
+
+    // New car mileage — null is correct (not "0 miles"), label as "New"
+    if (!vehicle.mileage && isNewCarUrl(vehicle.listing_url)) {
+      vehicle.mileage = 'New';
     }
 
     vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], photoHintsFromConfig);
@@ -800,6 +811,11 @@ async function enrichSingleVehicle(vehicle) {
           vehicle.vin = vinInUrl[1].toUpperCase();
           console.log(`DealersOrbit: VIN extracted from URL: ${vehicle.vin}`);
         }
+      }
+
+      // New car mileage — null is correct (not "0 miles"), label as "New"
+      if (!vehicle.mileage && isNewCarUrl(vehicle.listing_url)) {
+        vehicle.mileage = 'New';
       }
 
       // Apply photo hints — already resolved above, no second fetch needed
@@ -961,8 +977,15 @@ function extractDetailPageData(selectors) {
   const skipPatterns = ['thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 'badge', 'placeholder', '1x1', 'spacer'];
 
   // Safe wrappers — invalid CSS selectors (e.g. jQuery :contains()) throw in querySelector
-  const safeQuery  = (sel) => { try { return sel ? document.querySelector(sel) : null; } catch (e) { return null; } };
+  const safeQuery    = (sel) => { try { return sel ? document.querySelector(sel) : null; } catch (e) { return null; } };
   const safeQueryAll = (sel) => { try { return sel ? Array.from(document.querySelectorAll(sel)) : []; } catch (e) { return []; } };
+  // Extract only the dollar amount from an element — avoids grabbing label text like "JBA Price Freight Included"
+  const getPriceText = (el) => {
+    if (!el) return null;
+    const full = el.textContent?.trim() || '';
+    const match = full.match(/\$[\d,]+/);
+    return match ? match[0] : (full.length < 15 && /\d/.test(full) ? full : null);
+  };
 
   // ── Trigger full carousel load ────────────────────────────
   const nextBtns = document.querySelectorAll(
@@ -1000,22 +1023,48 @@ function extractDetailPageData(selectors) {
   // ── Price ─────────────────────────────────────────────────
   let price = null;
   if (selectors.sale_price) {
-    price = safeQuery(selectors.sale_price)?.textContent?.trim() || null;
+    price = getPriceText(safeQuery(selectors.sale_price));
   }
   if (!price) {
-    // Try final/internet price first (includes processing fee) then asking price
-    price = safeQuery('dd.final-price.internetPrice .price-value')?.textContent?.trim() ||
-            safeQuery('[class*="internet-price"] .price-value')?.textContent?.trim() ||
-            safeQuery('dd.askingPrice .price-value')?.textContent?.trim() || null;
+    // 1. Direct selectors — final/internet price first (includes fees)
+    price = getPriceText(safeQuery('dd.final-price.internetPrice .price-value')) ||
+            getPriceText(safeQuery('dd[class*="internetPrice"] .price-value')) ||
+            getPriceText(safeQuery('[class*="internet-price"] .price-value')) ||
+            getPriceText(safeQuery('[class*="our-price"] .price-value')) ||
+            getPriceText(safeQuery('[class*="selling-price"]')) ||
+            getPriceText(safeQuery('[class*="final-price"]'));
+
+    // 2. Label-scan fallback — finds final price by reading dt/th label text
+    // Works for new cars where the "JBA Price Freight Included" label precedes the value
+    if (!price) {
+      const labels = safeQueryAll('dl dt, dl th, table tr td:first-child, table tr th:first-child');
+      const FINAL_PRICE_KEYWORDS = ['freight', 'destination', 'internet price', 'jba price',
+        'our price', 'online price', 'total price', 'dealer price', 'final price'];
+      for (const label of labels) {
+        const text = label.textContent?.toLowerCase() || '';
+        if (FINAL_PRICE_KEYWORDS.some(kw => text.includes(kw))) {
+          const sibling = label.nextElementSibling;
+          const candidate = getPriceText(sibling?.querySelector?.('.price-value') || sibling);
+          if (candidate) { price = candidate; break; }
+        }
+      }
+    }
+
+    // 3. Last resort — any price-value element (avoids MSRP by trying last resort only)
+    if (!price) {
+      price = getPriceText(safeQuery('dd.askingPrice .price-value')) ||
+              getPriceText(safeQuery('[class*="sale-price"]')) ||
+              getPriceText(safeQuery('.price-value')) || null;
+    }
   }
 
   // ── Processing fee ────────────────────────────────────────
   let processingFee = null;
   if (selectors.processing_fee) {
-    processingFee = safeQuery(selectors.processing_fee)?.textContent?.trim() || null;
+    processingFee = getPriceText(safeQuery(selectors.processing_fee));
   }
   if (!processingFee) {
-    processingFee = safeQuery('dd.ABCRule .price-value')?.textContent?.trim() || null;
+    processingFee = getPriceText(safeQuery('dd.ABCRule .price-value'));
   }
 
   // ── Mileage ───────────────────────────────────────────────

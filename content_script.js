@@ -359,32 +359,149 @@ function injectConfigDrivenButtons(cards, config) {
   });
 }
 
-function injectConfigDrivenSingleButton(config) {
+// ── VDP detection ─────────────────────────────────────────────
+const VDP_URL_PATTERNS = [
+  '/vdp/', '/vehicle-details/', '/vehicle/', '/detail/',
+  '/used/', '/new/', '/certified/', '/inventory/',
+  '/cars/', '/pre-owned/',
+];
+
+function isVdpPage() {
+  const path = window.location.pathname.toLowerCase();
+  // VIN in URL is the strongest signal
+  if (VIN_REGEX.test(path)) return true;
+  // Known VDP path patterns
+  if (VDP_URL_PATTERNS.some(p => path.includes(p))) return true;
+  // Has a vehicle title with year and a price element
+  const h1 = document.querySelector('h1')?.innerText || '';
+  const hasVehicleTitle = YEAR_REGEX.test(h1) && CAR_MAKES.some(m => h1.toLowerCase().includes(m));
+  const hasPrice = !!document.querySelector('[class*="price"],[class*="Price"]');
+  return hasVehicleTitle && hasPrice;
+}
+
+// ── VDP import button ──────────────────────────────────────────
+function injectVdpButton(config) {
   if (document.querySelector(`.${BUTTON_CLASS}`)) return;
-  const ext = config.detail_page.extractors;
-  const getText = (sel) => document.querySelector(sel)?.innerText?.trim() || null;
-  const photoEls = Array.from(document.querySelectorAll(ext.photos.selector));
-  const photos = [...new Set(
-    photoEls
-      .map(img => (img.src || img.dataset.src || '').replace(/\?.*$/, ''))
-      .filter(src => src && src.startsWith('http'))
-  )].slice(0, 8);
+
+  const safeQ    = (sel) => { try { return sel ? document.querySelector(sel) : null; } catch (e) { return null; } };
+  const safeQAll = (sel) => { try { return sel ? Array.from(document.querySelectorAll(sel)) : []; } catch (e) { return []; } };
+  const getText  = (sel) => safeQ(sel)?.innerText?.trim() || null;
+  const dp = config?.detail_page?.extractors || {};
+  const skipPatterns = ['thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 'badge', 'placeholder', '1x1', 'spacer'];
+
+  // ── VIN ───────────────────────────────────────────────────────
+  let vin = (window.location.pathname.match(VIN_REGEX) || [])[1]?.toUpperCase() || null;
+  if (!vin && dp.vin?.selector) vin = getText(dp.vin.selector)?.match(/[A-HJ-NPR-Z0-9]{17}/i)?.[0] || null;
+  if (!vin) vin = (document.body.innerText.match(VIN_REGEX) || [])[1] || null;
+
+  // ── Title → year / make / model ───────────────────────────────
+  const titleEl  = document.querySelector('h1, .vehicle-title, [class*="vehicle-name"]');
+  const titleText = titleEl?.innerText?.trim() || document.title || '';
+  const year  = (titleText.match(YEAR_REGEX) || [])[0] || null;
+  const make  = extractMake(titleText);
+  const model = extractModel(document.body) ||
+    titleText.replace(YEAR_REGEX, '').replace(new RegExp(CAR_MAKES.join('|'), 'gi'), '').trim().split(/\s+/).slice(0, 3).join(' ') ||
+    null;
+
+  // ── Price ─────────────────────────────────────────────────────
+  let price = null;
+  if (dp.price?.selector) price = getText(dp.price.selector);
+  if (!price) {
+    // Final/internet price first (includes processing fee), then base asking price
+    const priceEl = safeQ('dd.final-price.internetPrice .price-value') ||
+                    safeQ('[class*="internet-price"] .price-value') ||
+                    safeQ('[class*="our-price"]') || safeQ('[class*="online-price"]') ||
+                    safeQ('dd.askingPrice .price-value') ||
+                    safeQ('[class*="sale-price"]') || safeQ('[class*="asking-price"]');
+    price = priceEl?.innerText?.trim() || null;
+  }
+
+  // ── Mileage ───────────────────────────────────────────────────
+  let mileage = null;
+  if (dp.mileage?.selector) mileage = getText(dp.mileage.selector);
+  if (!mileage) {
+    const els = safeQAll('.highlight-badge, [class*="mileage"], [class*="miles"]');
+    mileage = els.find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
+  }
+
+  // ── Photos — try config selector, then CDN extraction, then generic ──
+  let photos = [];
+  if (dp.photos?.selector) {
+    photos = safeQAll(dp.photos.selector)
+      .map(img => (img.getAttribute('data-src') || img.src || '').replace(/\?.*$/, ''))
+      .filter(src => src && src.startsWith('http') && !skipPatterns.some(p => src.toLowerCase().includes(p)))
+      .filter((s, i, a) => a.indexOf(s) === i).slice(0, 40);
+  }
+  if (!photos.length) {
+    // pictures.dealer.com CDN extraction from raw HTML
+    const cdnMatches = document.documentElement.innerHTML.match(/https:\/\/pictures\.dealer\.com\/[^"'\s>\\]+/g) || [];
+    const cdnSet = new Set();
+    cdnMatches.forEach(url => {
+      const clean = url.replace(/\\u0026.*/, '').replace(/\?.*/, '').replace(/\\.*/, '');
+      if (clean.match(/\.(jpg|jpeg|png|webp)$/i)) cdnSet.add(clean);
+    });
+    photos = Array.from(cdnSet).filter(s => !skipPatterns.some(p => s.toLowerCase().includes(p))).slice(0, 40);
+  }
+  if (!photos.length) {
+    photos = safeQAll('img')
+      .map(img => (img.getAttribute('data-src') || img.src || '').replace(/\?.*$/, ''))
+      .filter(src => src.startsWith('http') && src.match(/\.(jpg|jpeg|webp|png)/i))
+      .filter(src => !skipPatterns.some(p => src.toLowerCase().includes(p)))
+      .filter((s, i, a) => a.indexOf(s) === i).slice(0, 40);
+  }
+
+  if (!vin && !price) return; // Not enough data to import
 
   const vehicleData = {
-    vin: document.querySelector(ext.vin.selector)
-      ?.getAttribute(ext.vin.attribute) ||
-      getText(ext.vin.selector),
-    price: getText(ext.price.selector),
-    photos: photos,
+    vin,
+    year,
+    make,
+    model,
+    price,
+    mileage,
+    photos,
+    photos_for_video: photos.slice(0, 20),
     listing_url: window.location.href,
-    source_url: window.location.href,
-    dealership: config.dealership_name,
-    scraped_at: new Date().toISOString(),
+    source_url:  window.location.href,
+    dealership:  window.location.hostname,
+    scraped_at:  new Date().toISOString(),
+    vdp_import:  true, // tells background.js to skip opening a detail tab
   };
 
-  const btn = createImportButton(vehicleData);
-  const target = document.querySelector('h1') || document.querySelector('main');
-  if (target) target.insertAdjacentElement('afterend', btn);
+  // Fixed button — bottom-right fallback (always present)
+  const fixedBtn = createImportButton(vehicleData);
+  fixedBtn.style.cssText += 'position:fixed;bottom:20px;right:20px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
+  document.body.appendChild(fixedBtn);
+
+  // Inline button — inserted near price/CTA area (fresh button, not a clone)
+  // Try selectors from most specific to most generic
+  const INLINE_ANCHORS = [
+    'dl.pricing-detail',          // JBA / Dealer Inspire
+    '[class*="pricing-detail"]',
+    '[class*="price-block"]',
+    '[class*="priceBlock"]',
+    '[class*="vehicle-price"]',
+    '[class*="price-box"]',
+    '[class*="pricing"]',
+    '.price-section',
+    '[class*="vdp-cta"]',
+    '[class*="vehicle-cta"]',
+    '[class*="cta-section"]',
+    'h1',                          // last resort — right after the title
+  ];
+  let injected = false;
+  for (const sel of INLINE_ANCHORS) {
+    const anchor = safeQ(sel);
+    if (anchor) {
+      const inlineBtn = createImportButton(vehicleData);
+      inlineBtn.style.display = 'block';
+      inlineBtn.style.marginTop = '12px';
+      inlineBtn.style.marginBottom = '8px';
+      anchor.insertAdjacentElement('afterend', inlineBtn);
+      injected = true;
+      break;
+    }
+  }
 }
 
 
@@ -1783,9 +1900,12 @@ async function init() {
   const cards = Array.from(
     document.querySelectorAll(config.inventory_page.card_selector)
   );
-  // URL pattern match OR card selector finds multiple elements on page
-  const isInventory = config.inventory_page.url_patterns.some(p => url.includes(p))
-    || cards.length >= 2;
+  // VDP check takes priority — VDPs often share URL prefixes with inventory (/used/)
+  // so we check card count and VDP signals before falling back to url_patterns
+  const hasMultipleCards = cards.length >= 2;
+  const onVdp = !hasMultipleCards && isVdpPage();
+  const isInventory = hasMultipleCards ||
+    (!onVdp && config.inventory_page.url_patterns.some(p => url.includes(p)));
 
   if (isInventory) {
     if (cards.length > 0) {
@@ -1798,8 +1918,8 @@ async function init() {
       });
       observer.observe(document.body, { childList: true, subtree: true });
     }
-  } else {
-    injectConfigDrivenSingleButton(config);
+  } else if (onVdp) {
+    injectVdpButton(config);
   }
 }
 

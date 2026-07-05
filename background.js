@@ -403,7 +403,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "ADD_TO_QUEUE") {
     console.log("DealersOrbit: Received vehicle, fetching detail page...", message.vehicle);
-    enrichAndQueue(message.vehicle)
+    const vehicle = message.vehicle;
+    // Pass source tab ID for VDP imports so enrichment can run on the current tab
+    if (vehicle.vdp_import && sender?.tab?.id) {
+      vehicle._source_tab_id = sender.tab.id;
+    }
+    enrichAndQueue(vehicle)
       .then(result => sendResponse({ success: true, queueLength: result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
@@ -612,6 +617,80 @@ async function enrichSingleVehicle(vehicle) {
   console.log("DealersOrbit: enrichSingleVehicle:", vehicle.model);
   console.log("DealersOrbit: listing_url:", vehicle.listing_url);
 
+  // VDP imports: user is already on the detail page — run extractDetailPageData
+  // on the source tab instead of opening a new one
+  if (vehicle.vdp_import) {
+    console.log("DealersOrbit: VDP import — extracting from source tab");
+
+    let detailPageSelectors = {};
+    let photoHintsFromConfig = null;
+
+    if (vehicle.listing_url) {
+      try {
+        const domain = new URL(vehicle.listing_url).hostname;
+        const cfgResp = await fetch(`https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`);
+        if (cfgResp.ok) {
+          const cfgData = await cfgResp.json();
+          if (cfgData.found && cfgData.config) {
+            if (cfgData.config.detail_page) detailPageSelectors = cfgData.config.detail_page;
+            if (cfgData.config.photo_hints?.exterior_count) {
+              photoHintsFromConfig = {
+                exterior_position: 'first',
+                exterior_count: cfgData.config.photo_hints.exterior_count,
+                interior_position: 'after_exterior',
+              };
+            }
+          }
+        }
+        // Always check hardcoded for photo hints — backend photo_hints are often null
+        const hardcoded = getConfigForDomain(domain);
+        if (!Object.keys(detailPageSelectors).length && hardcoded?.detail_page) {
+          detailPageSelectors = hardcoded.detail_page;
+        }
+        if (!photoHintsFromConfig && hardcoded?.photo_hints) {
+          photoHintsFromConfig = hardcoded.photo_hints;
+        }
+      } catch (err) {}
+    }
+
+    if (vehicle._source_tab_id) {
+      try {
+        await sleep(2000); // give page time for lazy images to load
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: vehicle._source_tab_id },
+          func:   extractDetailPageData,
+          args:   [detailPageSelectors],
+        });
+        const detailData = results?.[0]?.result;
+        console.log(`DealersOrbit: VDP detail data:`, detailData);
+        if (detailData && !detailData._error) {
+          vehicle.vin           = detailData.vin           || vehicle.vin;
+          vehicle.price         = detailData.price         || vehicle.price;
+          vehicle.mileage       = detailData.mileage       || vehicle.mileage;
+          vehicle.exterior_color = detailData.exterior_color || null;
+          vehicle.interior_color = detailData.interior_color || null;
+          vehicle.body_style    = detailData.body_style    || null;
+          if ((detailData.photos?.length || 0) > (vehicle.photos?.length || 0)) {
+            vehicle.photos = detailData.photos;
+            console.log(`DealersOrbit: VDP got ${detailData.photos.length} photos from tab`);
+          }
+        }
+      } catch (err) {
+        console.log("DealersOrbit: VDP tab extraction failed:", err.message);
+      }
+    }
+
+    // VIN fallback from URL
+    if (!vehicle.vin && vehicle.listing_url) {
+      const vinInUrl = vehicle.listing_url.match(/\b([A-HJ-NPR-Z0-9]{17})\b/i);
+      if (vinInUrl) vehicle.vin = vinInUrl[1].toUpperCase();
+    }
+
+    vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], photoHintsFromConfig);
+    console.log(`DealersOrbit: VDP selected ${vehicle.photos_for_video.length} photos`);
+
+  } else {
+
   // ── Resolve config for this domain (one fetch, used for both selectors + photo hints) ──
   let detailPageSelectors = {};
   let photoHintsFromConfig = null;
@@ -640,16 +719,14 @@ async function enrichSingleVehicle(vehicle) {
         }
       }
 
-      // Fall back to hardcoded config if backend had nothing
-      if (!Object.keys(detailPageSelectors).length) {
-        const hardcoded = getConfigForDomain(domain);
-        if (hardcoded?.detail_page) {
-          detailPageSelectors = hardcoded.detail_page;
-          console.log(`DealersOrbit: Using hardcoded detail selectors for ${domain}`);
-        }
-        if (!photoHintsFromConfig && hardcoded?.photo_hints) {
-          photoHintsFromConfig = hardcoded.photo_hints;
-        }
+      // Always check hardcoded for photo hints — backend photo_hints are often null
+      const hardcoded = getConfigForDomain(domain);
+      if (!Object.keys(detailPageSelectors).length && hardcoded?.detail_page) {
+        detailPageSelectors = hardcoded.detail_page;
+        console.log(`DealersOrbit: Using hardcoded detail selectors for ${domain}`);
+      }
+      if (!photoHintsFromConfig && hardcoded?.photo_hints) {
+        photoHintsFromConfig = hardcoded.photo_hints;
       }
     } catch (err) {
       console.log('DealersOrbit: Could not resolve config:', err.message);
@@ -737,6 +814,8 @@ async function enrichSingleVehicle(vehicle) {
       }
     }
   }
+
+  } // end else (non-VDP)
 
   // ── Step 2: Always add to review queue as a card ──────────
   const { pending_review_queue = [] } =
@@ -924,8 +1003,10 @@ function extractDetailPageData(selectors) {
     price = safeQuery(selectors.sale_price)?.textContent?.trim() || null;
   }
   if (!price) {
-    price = safeQuery('dd.askingPrice .price-value')?.textContent?.trim() ||
-            safeQuery('dd.final-price.internetPrice .price-value')?.textContent?.trim() || null;
+    // Try final/internet price first (includes processing fee) then asking price
+    price = safeQuery('dd.final-price.internetPrice .price-value')?.textContent?.trim() ||
+            safeQuery('[class*="internet-price"] .price-value')?.textContent?.trim() ||
+            safeQuery('dd.askingPrice .price-value')?.textContent?.trim() || null;
   }
 
   // ── Processing fee ────────────────────────────────────────

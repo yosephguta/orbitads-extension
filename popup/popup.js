@@ -198,6 +198,25 @@ let modalSelectedTheme = null;
 let modalVehicle = null;
 let modalSelectedOutroId = null;
 let modalQueueItemId = null;
+let savedScripts          = [];
+let selectedSavedScript   = null;
+let currentGeneratedPrompt = null;
+
+// Onboarding state
+let onboardingState = {
+  step:              'welcome',
+  cardSelector:      null,
+  detailUrl:         null,
+  scrapedData:       null,
+  priceOptions:      [],
+  selectedPrice:     null,
+  photoSelector:     null,
+  exteriorClicked:   null,
+  interiorClicked:   null,
+  validationResults: {},
+  attemptCount:      0,
+  configForNewCars:  false,
+};
 
 // ... rest of the file (all functions and event listeners)
 // ... init() call stays at the very bottom
@@ -578,9 +597,19 @@ signOutBtn?.addEventListener("click", async () => {
     clearInterval(queueInterval);
     queueInterval = null;
   }
-  await chrome.storage.local.remove(["token", "user", "subscription_cache"]);
+  await chrome.storage.local.remove([
+    'token', 'user', 'subscription_cache',
+    'pending_review_queue', 'queue',
+    'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
+    'sold_notifications', 'last_sold_check',
+    'dealer_configured', 'config_status',
+    'onboarding_card_selector', 'onboarding_detail_url',
+    'onboarding_prices', 'onboarding_waiting_detail',
+    'current_generating_vin', 'userLanguage', 'dealersorbit_migrated',
+  ]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
+  console.log('DealersOrbit: Signed out, storage cleared');
 });
 
 // ── Onboarding ────────────────────────────────────────────────
@@ -592,86 +621,708 @@ function showReviewBanner() {
 }
 
 async function checkAndStartOnboarding(user) {
-  if (!user?.dealership_url) return;
-  if (ADMIN_EMAILS.includes(user.email?.toLowerCase())) return;
+  // Skip for admins
+  if (ADMIN_EMAILS.includes(user?.email?.toLowerCase())) return;
 
-  const { dealer_configured, config_status } = await chrome.storage.local.get(['dealer_configured', 'config_status']);
-
+  // Skip if already configured
+  const { dealer_configured, config_status } =
+    await chrome.storage.local.get(['dealer_configured', 'config_status']);
   if (dealer_configured) {
     if (config_status === 'pending_review') showReviewBanner();
     return;
   }
 
-  // First time — show onboarding overlay
-  const overlay = document.getElementById('onboardingOverlay');
-  if (!overlay) return;
-  overlay.style.display = 'flex';
+  // Skip if no dealership URL set
+  if (!user?.dealership_url) return;
 
-  const domain = user.dealership_url.split('/')[0].replace(/^www\./, '');
-
-  document.getElementById('onboardingMessage').textContent =
-    `We'll configure ${domain} so your Import buttons appear. This only happens once.`;
-
-  // Check if current tab is on the right domain
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const tabDomain = tab?.url ? new URL(tab.url).hostname.replace(/^www\./, '') : '';
-  const onRightPage = tabDomain === domain || tabDomain.endsWith('.' + domain);
-
-  const openBtn      = document.getElementById('onboardingOpenBtn');
-  const configureBtn = document.getElementById('onboardingConfigureBtn');
-  const statusEl     = document.getElementById('onboardingStatus');
-
-  if (onRightPage) {
-    statusEl.textContent = `You're on ${tabDomain}. Ready to configure!`;
-    configureBtn.style.display = 'block';
-  } else {
-    statusEl.textContent = `Navigate to your inventory page first, then click the button below.`;
-    openBtn.style.display = 'block';
-    configureBtn.style.display = 'block';
-  }
-
-  openBtn.onclick = () => {
-    const url = user.dealership_url.startsWith('http') ? user.dealership_url : `https://${user.dealership_url}`;
-    chrome.tabs.create({ url });
-  };
-
-  configureBtn.onclick = () => startConfigCapture(user);
-  document.getElementById('onboardingRetryBtn').onclick = () => startConfigCapture(user);
+  showOnboardingStep('welcome');
 }
 
-async function startConfigCapture(user) {
-  const statusEl     = document.getElementById('onboardingStatus');
-  const spinnerEl    = document.getElementById('onboardingSpinner');
-  const openBtn      = document.getElementById('onboardingOpenBtn');
-  const configureBtn = document.getElementById('onboardingConfigureBtn');
-  const retryBtn     = document.getElementById('onboardingRetryBtn');
+function showOnboardingStep(stepName, data = {}) {
+  onboardingState.step = stepName;
+  const overlay  = document.getElementById('onboardingOverlay');
+  const content  = document.getElementById('onboardingStepContent');
+  const progress = document.getElementById('onboardingProgress');
+  if (!overlay || !content) return;
 
-  statusEl.textContent = 'Analyzing your inventory page… This only happens once.';
-  spinnerEl.style.display = 'block';
-  openBtn.style.display = 'none';
-  configureBtn.style.display = 'none';
-  retryBtn.style.display = 'none';
+  const steps = {
+    'welcome':          0,
+    'go_to_inventory':  15,
+    'click_vehicle':    25,
+    'go_to_detail':     35,
+    'click_photos':     50,
+    'select_price':     65,
+    'validating':       75,
+    'validation':       85,
+    'new_car_prompt':   88,
+    'new_car_go':       90,
+    'new_car_detail':   93,
+    'new_car_price':    96,
+    'complete':         100,
+    'manual_needed':    100,
+  };
 
-  chrome.runtime.sendMessage({ type: 'CAPTURE_CONFIG_HTML' }, async (response) => {
-    spinnerEl.style.display = 'none';
+  if (progress) {
+    progress.style.width = (steps[stepName] || 0) + '%';
+  }
 
-    if (response?.success) {
-      document.getElementById('onboardingIcon').textContent = '✅';
-      document.getElementById('onboardingTitle').textContent = 'Site Configured!';
-      statusEl.textContent =
-        'Your configuration is being reviewed. It may have minor issues for now but will be fully optimized within 24 hours. You\'re free to use it today.';
-      await chrome.storage.local.set({ dealer_configured: true, config_status: 'pending_review' });
-      setTimeout(() => {
-        document.getElementById('onboardingOverlay').style.display = 'none';
-        showReviewBanner();
-      }, 3500);
-    } else {
-      const err = response?.error || 'Setup failed. Please navigate to your inventory page and try again.';
-      statusEl.textContent = err;
-      retryBtn.style.display = 'block';
-      configureBtn.style.display = 'block';
+  overlay.style.display = 'flex';
+  content.innerHTML = renderOnboardingStep(stepName, data);
+  attachOnboardingHandlers(stepName, data);
+}
+
+function hideOnboarding() {
+  const overlay = document.getElementById('onboardingOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+// Receive messages from content script / background during onboarding
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'ONBOARDING_ON_DETAIL_PAGE') {
+    showOnboardingStep('click_photos');
+  }
+  if (message.type === 'SHOW_PRICE_SELECTION') {
+    showOnboardingStep('select_price', { prices: message.prices });
+  }
+});
+
+function renderOnboardingStep(stepName, data = {}) {
+  switch (stepName) {
+
+    case 'welcome':
+      return `
+        <div style='text-align:center;margin-bottom:20px'>
+          <div style='font-size:48px;margin-bottom:12px'>🚗</div>
+          <h2 class='onboarding-step-title'>Let's set up your inventory</h2>
+          <p class='onboarding-step-desc'>
+            DealersOrbit needs to learn your dealership's website so it can
+            import vehicles automatically. This takes about 2 minutes.
+          </p>
+        </div>
+        <button class='onboarding-action-btn' id='onboardingStartBtn'>
+          Get Started →
+        </button>
+        <button class='onboarding-skip-btn' id='onboardingSkipBtn'>
+          Skip for now
+        </button>`;
+
+    case 'go_to_inventory':
+      return `
+        <div style='text-align:center;margin-bottom:16px'>
+          <div style='font-size:36px;margin-bottom:10px'>📋</div>
+          <h2 class='onboarding-step-title'>Go to your used car inventory</h2>
+          <p class='onboarding-step-desc'>
+            Open a new tab and navigate to your dealership's
+            <strong>used car inventory page</strong> — the page that lists
+            all your pre-owned vehicles.
+          </p>
+          <div style='
+            background:#f0fdf4;
+            border:1px solid #bbf7d0;
+            border-radius:8px;
+            padding:10px 12px;
+            font-size:12px;
+            color:#15803d;
+            margin-bottom:16px;
+            text-align:left;
+          '>
+            💡 Tip: This is usually a page like<br>
+            <strong>yourdealer.com/used-inventory</strong>
+          </div>
+        </div>
+        <button class='onboarding-action-btn' id='onboardingImOnInventoryBtn'>
+          I'm on the inventory page ✓
+        </button>
+        <button class='onboarding-skip-btn' id='onboardingSkipBtn'>
+          Skip for now
+        </button>`;
+
+    case 'click_vehicle':
+      return `
+        <div style='text-align:center;margin-bottom:16px'>
+          <div style='font-size:36px;margin-bottom:10px'>👆</div>
+          <h2 class='onboarding-step-title'>Click any vehicle</h2>
+          <p class='onboarding-step-desc'>
+            Click on any vehicle on the inventory page to open
+            its detail page. DealersOrbit is watching and will
+            learn from your click.
+          </p>
+          <div style='
+            background:#f0fdf4;
+            border:1px solid #bbf7d0;
+            border-radius:8px;
+            padding:10px 12px;
+            font-size:12px;
+            color:#15803d;
+            text-align:left;
+            margin-bottom:10px;
+          '>
+            💡 Pick a vehicle with <strong>real photos</strong> — not a
+            new arrival with a stock image. The more photos it has, the
+            better DealersOrbit will learn your site.
+          </div>
+          <div style='
+            background:#eff6ff;
+            border:1px solid #bfdbfe;
+            border-radius:8px;
+            padding:10px 12px;
+            font-size:12px;
+            color:#1e40af;
+            text-align:left;
+          '>
+            🔍 DealersOrbit is ready and watching...
+          </div>
+        </div>
+        <button class='onboarding-skip-btn' id='onboardingSkipBtn'>
+          Skip for now
+        </button>`;
+
+    case 'click_photos':
+      return `
+        <div style='text-align:center;margin-bottom:16px'>
+          <div style='font-size:36px;margin-bottom:10px'>📸</div>
+          <h2 class='onboarding-step-title'>Click one exterior photo</h2>
+          <p class='onboarding-step-desc'>
+            On the vehicle detail page, click on any
+            <strong>exterior photo</strong> of the car.
+          </p>
+          <div id='photoClickStatus' style='
+            background:#eff6ff;
+            border:1px solid #bfdbfe;
+            border-radius:8px;
+            padding:10px 12px;
+            font-size:12px;
+            color:#1e40af;
+            text-align:left;
+          '>
+            🔍 Waiting for you to click an exterior photo...
+          </div>
+        </div>
+        <button class='onboarding-skip-btn' id='onboardingSkipPhotosBtn'>
+          Skip photo selection
+        </button>`;
+
+    case 'select_price': {
+      const isNewCar = onboardingState.configForNewCars;
+      const title = isNewCar
+        ? 'Which price do you advertise for new cars?'
+        : 'Which price does your dealership advertise?';
+      const subtitle = isNewCar
+        ? 'New cars often show MSRP, dealer discount, rebates, and incentives. Select the final price your dealership uses in ads.'
+        : 'We found these prices on the vehicle page. Select the one your dealership uses in advertisements.';
+      const prices = data.prices || [];
+      const priceRows = prices.map((p, i) => `
+        <div class='onboarding-price-option' data-price-index='${i}'>
+          <div style='flex:1'>
+            <div class='onboarding-price-label'>${p.label || 'Price'}</div>
+            <div class='onboarding-price-value'>${p.value}</div>
+          </div>
+          <div style='font-size:20px'>○</div>
+        </div>
+      `).join('');
+      return `
+        <h2 class='onboarding-step-title'>${title}</h2>
+        <p class='onboarding-step-desc'>${subtitle}</p>
+        <div style='max-height:220px;overflow-y:auto;margin-bottom:16px'>
+          ${priceRows || '<p style="color:#9ca3af;font-size:13px">No prices found — we\'ll use the best available</p>'}
+        </div>
+        <button class='onboarding-action-btn' id='onboardingConfirmPriceBtn' disabled>
+          Confirm Price →
+        </button>
+        <button class='onboarding-skip-btn' id='onboardingSkipPriceBtn'>
+          Not sure — use best guess
+        </button>`;
     }
+
+    case 'validating':
+      return `
+        <div style='text-align:center;padding:20px 0'>
+          <div style='font-size:48px;margin-bottom:16px'>⚙️</div>
+          <h2 class='onboarding-step-title'>Learning your site...</h2>
+          <p class='onboarding-step-desc'>
+            DealersOrbit is analyzing the vehicle data
+            and building your configuration.
+          </p>
+          <div style='
+            display:flex;
+            align-items:center;
+            gap:8px;
+            justify-content:center;
+            color:#1a56db;
+            font-size:13px;
+          '>
+            <div style='
+              width:16px;height:16px;
+              border:2px solid #1a56db;
+              border-top-color:transparent;
+              border-radius:50%;
+              animation:spin360 1s linear infinite;
+            '></div>
+            Analyzing...
+          </div>
+        </div>`;
+
+    case 'validation': {
+      const fields = data.fields || [];
+      const rows = fields.map(f => `
+        <div class='onboarding-field-row'>
+          <div class='onboarding-field-label'>${f.label}</div>
+          <div class='onboarding-field-value' title='${f.value || ''}'>${f.value || '—'}</div>
+          <div class='onboarding-field-status' data-field='${f.key}'>
+            ${f.value ? '✅' : '❓'}
+          </div>
+          ${f.value ? `
+            <button class='onboarding-wrong-btn' data-field='${f.key}'
+                    style='font-size:11px;background:none;border:1px solid #e5e7eb;
+                           border-radius:4px;padding:3px 8px;cursor:pointer;color:#6b7280'>
+              Wrong
+            </button>` : ''}
+        </div>
+      `).join('');
+      return `
+        <h2 class='onboarding-step-title'>Does this look right?</h2>
+        <p class='onboarding-step-desc'>
+          We scraped this vehicle. Check that the details are correct.
+        </p>
+        <div style='margin-bottom:16px'>${rows}</div>
+        <button class='onboarding-action-btn' id='onboardingValidationOkBtn'>
+          Looks good! →
+        </button>
+        <button class='onboarding-skip-btn' id='onboardingSkipBtn'>
+          Something is wrong — skip for now
+        </button>`;
+    }
+
+    case 'new_car_prompt':
+      return `
+        <div style='text-align:center;margin-bottom:16px'>
+          <div style='font-size:36px;margin-bottom:10px'>✨</div>
+          <h2 class='onboarding-step-title'>Used cars ✓ Now let's do new cars</h2>
+          <p class='onboarding-step-desc'>
+            Great! Your used car inventory is configured.
+            Now navigate to your <strong>new car inventory page</strong>
+            so we can set that up too.
+          </p>
+          <p style='font-size:12px;color:#9ca3af'>
+            New cars have different pricing (MSRP, rebates, dealer discount)
+            so we need to set them up separately.
+          </p>
+        </div>
+        <button class='onboarding-action-btn' id='onboardingDoNewCarsBtn'>
+          Set Up New Cars →
+        </button>
+        <button class='onboarding-skip-btn' id='onboardingSkipNewCarsBtn'>
+          Skip — I only sell used cars
+        </button>`;
+
+    case 'complete':
+      return `
+        <div style='text-align:center;padding:10px 0'>
+          <div style='font-size:48px;margin-bottom:16px'>🎉</div>
+          <h2 class='onboarding-step-title'>You're all set!</h2>
+          <p class='onboarding-step-desc'>
+            DealersOrbit has learned your inventory site.
+            ${data.pendingReview ?
+              'Your configuration is being reviewed and will be active within 24 hours.' :
+              'Import buttons will appear on your vehicle listings right away.'}
+          </p>
+        </div>
+        <button class='onboarding-action-btn' id='onboardingDoneBtn'>
+          Start Importing Vehicles →
+        </button>`;
+
+    case 'manual_needed':
+      return `
+        <div style='text-align:center;padding:10px 0'>
+          <div style='font-size:48px;margin-bottom:16px'>🛠️</div>
+          <h2 class='onboarding-step-title'>Your site needs manual setup</h2>
+          <p class='onboarding-step-desc'>
+            Your dealership's website has a unique structure that
+            requires manual configuration. Our team will set it up
+            for you within <strong>24 hours</strong>.
+          </p>
+          <p style='font-size:12px;color:#9ca3af;margin-bottom:16px'>
+            You'll receive an email when your configuration is ready.
+          </p>
+        </div>
+        <button class='onboarding-action-btn' id='onboardingDoneBtn'>
+          OK, got it
+        </button>`;
+
+    default:
+      return '<p style="color:#9ca3af;font-size:13px;text-align:center">Loading...</p>';
+  }
+}
+
+function attachOnboardingHandlers(stepName, data = {}) {
+  // Universal skip handler
+  document.getElementById('onboardingSkipBtn')?.addEventListener('click', async () => {
+    hideOnboarding();
+    await chrome.storage.local.set({ dealer_configured: true });
   });
+
+  switch (stepName) {
+
+    case 'welcome':
+      document.getElementById('onboardingStartBtn')?.addEventListener('click', () => {
+        showOnboardingStep('go_to_inventory');
+      });
+      break;
+
+    case 'go_to_inventory':
+      document.getElementById('onboardingImOnInventoryBtn')?.addEventListener('click', async () => {
+        const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
+        const activeTab = tabs.find(t => t.active) || tabs[0];
+        if (!activeTab) {
+          alert('Please open your inventory page in a browser tab first.');
+          return;
+        }
+        try {
+          await chrome.tabs.sendMessage(activeTab.id, { type: 'START_CARD_DETECTION' });
+        } catch (e) {
+          // Content script may not be injected on this page yet — advance anyway
+          console.log('[Onboarding] START_CARD_DETECTION send failed:', e.message);
+        }
+        showOnboardingStep('click_vehicle');
+      });
+      break;
+
+    case 'click_vehicle':
+      // Content script messages us when a card is clicked — handled in chrome.runtime.onMessage
+      break;
+
+    case 'click_photos':
+      document.getElementById('onboardingSkipPhotosBtn')?.addEventListener('click', () => {
+        onboardingState.photoSelector = null;
+        // TODO Phase 5: proceedToPriceSelection()
+      });
+      break;
+
+    case 'select_price':
+      document.querySelectorAll('.onboarding-price-option').forEach((option, idx) => {
+        option.addEventListener('click', () => {
+          document.querySelectorAll('.onboarding-price-option').forEach(o => {
+            o.classList.remove('selected');
+            o.querySelector('div:last-child').textContent = '○';
+          });
+          option.classList.add('selected');
+          option.querySelector('div:last-child').textContent = '●';
+          onboardingState.selectedPrice = data.prices[idx];
+          const confirmBtn = document.getElementById('onboardingConfirmPriceBtn');
+          if (confirmBtn) confirmBtn.disabled = false;
+        });
+      });
+
+      document.getElementById('onboardingConfirmPriceBtn')?.addEventListener('click', async () => {
+        await submitOnboardingConfig();
+      });
+
+      document.getElementById('onboardingSkipPriceBtn')?.addEventListener('click', async () => {
+        onboardingState.selectedPrice = data.prices?.[0] || null;
+        await submitOnboardingConfig();
+      });
+      break;
+
+    case 'validation': {
+      let wrongCount = 0;
+
+      document.getElementById('onboardingValidationOkBtn')?.addEventListener('click', () => {
+        if (onboardingState.configForNewCars) {
+          finishOnboarding(true);
+        } else {
+          showOnboardingStep('new_car_prompt');
+        }
+      });
+
+      document.querySelectorAll('.onboarding-wrong-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          wrongCount++;
+          onboardingState.attemptCount++;
+          const field    = btn.dataset.field;
+          const statusEl = document.querySelector(`[data-field='${field}']`);
+          if (statusEl) statusEl.textContent = '❌';
+          btn.textContent = 'Marked';
+          btn.disabled    = true;
+
+          if (wrongCount >= 3 || onboardingState.attemptCount >= 5) {
+            await chrome.runtime.sendMessage({ type: 'FLAG_FOR_MANUAL_REVIEW' });
+            showOnboardingStep('manual_needed');
+          }
+        });
+      });
+      break;
+    }
+
+    case 'new_car_prompt':
+      document.getElementById('onboardingDoNewCarsBtn')?.addEventListener('click', async () => {
+        onboardingState.configForNewCars  = true;
+        onboardingState.cardSelector      = null;
+        onboardingState.detailUrl         = null;
+        onboardingState.exteriorClicked   = null;
+        onboardingState.interiorClicked   = null;
+        onboardingState.selectedPrice     = null;
+        await chrome.storage.local.remove([
+          'onboarding_card_selector',
+          'onboarding_detail_url',
+          'onboarding_prices',
+          'onboarding_waiting_detail',
+        ]);
+        showOnboardingStep('go_to_inventory');
+      });
+      document.getElementById('onboardingSkipNewCarsBtn')?.addEventListener('click', () => {
+        finishOnboarding(true);
+      });
+      break;
+
+    case 'complete':
+    case 'manual_needed':
+      document.getElementById('onboardingDoneBtn')?.addEventListener('click', async () => {
+        hideOnboarding();
+        await chrome.storage.local.set({ dealer_configured: true });
+        const { config_status } = await chrome.storage.local.get('config_status');
+        if (config_status === 'pending_review') showReviewBanner();
+        renderQueue();
+      });
+      break;
+  }
+}
+
+async function finishOnboarding(pendingReview = false) {
+  await chrome.storage.local.remove([
+    'onboarding_card_selector',
+    'onboarding_detail_url',
+    'onboarding_prices',
+    'onboarding_waiting_detail',
+  ]);
+  await chrome.storage.local.set({
+    dealer_configured: true,
+    config_status: pendingReview ? 'pending_review' : 'active',
+  });
+  if (pendingReview) showReviewBanner();
+  showOnboardingStep('complete', { pendingReview });
+}
+
+async function submitOnboardingConfig() {
+  showOnboardingStep('validating');
+  await new Promise(r => setTimeout(r, 50)); // let browser paint the spinner
+
+  const { token } = await chrome.storage.local.get('token');
+
+  try {
+    const {
+      onboarding_card_selector,
+      onboarding_detail_url,
+      onboarding_prices,
+    } = await chrome.storage.local.get([
+      'onboarding_card_selector',
+      'onboarding_detail_url',
+      'onboarding_prices',
+    ]);
+
+    // Find the detail page tab by matching stored URL (most reliable)
+    const allTabs = await chrome.tabs.query({});
+    let detailTab = null;
+    if (onboarding_detail_url) {
+      try {
+        const stored = new URL(onboarding_detail_url);
+        detailTab = allTabs.find(t => {
+          try {
+            const tu = new URL(t.url || '');
+            return tu.hostname === stored.hostname && tu.pathname === stored.pathname;
+          } catch (_) { return false; }
+        });
+      } catch (_) {}
+    }
+    // Fallback: active tab in last focused window
+    if (!detailTab) {
+      const winTabs = await chrome.tabs.query({ lastFocusedWindow: true });
+      detailTab = winTabs.find(t => t.active);
+    }
+
+    // Capture price/spec/gallery HTML fragments from the detail page
+    let detailHtml = null;
+    if (detailTab) {
+      try {
+        const htmlResults = await chrome.scripting.executeScript({
+          target: { tabId: detailTab.id },
+          func:   captureDetailHtmlFragments,
+        });
+        detailHtml = htmlResults?.[0]?.result || null;
+      } catch (e) {
+        console.log('[Onboarding] captureDetailHtml failed:', e.message);
+      }
+    }
+
+    // Build payload — card_selector and selected_price come from user interaction
+    const payload = {
+      source_url:              onboarding_detail_url || detailTab?.url || '',
+      card_selector:           onboarding_card_selector,
+      selected_price:          onboardingState.selectedPrice,
+      exterior_photo_selector: onboardingState.exteriorClicked?.selector || null,
+      interior_photo_selector: onboardingState.interiorClicked?.selector || null,
+      detail_html:             detailHtml,
+      for_new_cars:            onboardingState.configForNewCars,
+    };
+
+    const resp = await fetch(`${API_BASE}/dealer-configs/generate-from-html`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    // 409 = active config already exists — store it locally so buttons appear immediately
+    if (resp.status === 409) {
+      try {
+        const errData = await resp.json();
+        const existingConfig = errData?.detail?.config;
+        if (existingConfig && onboarding_detail_url) {
+          const srcDomain = new URL(onboarding_detail_url).hostname;
+          await chrome.storage.local.set({
+            onboarding_pending_config: {
+              config:      existingConfig,
+              domain:      srcDomain,
+              price_label: onboardingState.selectedPrice?.label || null,
+            },
+          });
+        }
+      } catch (_) {}
+      await finishOnboarding(false);
+      return;
+    }
+
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      throw new Error(`Config generation failed (${resp.status}): ${errBody}`);
+    }
+
+    const configData = await resp.json();
+    await chrome.storage.local.set({ onboarding_config_id: configData.config_id });
+
+    // Store config locally so import buttons work immediately (without waiting for approval)
+    if (configData.config) {
+      try {
+        const srcDomain = new URL(onboarding_detail_url || '').hostname;
+        await chrome.storage.local.set({
+          onboarding_pending_config: {
+            config:       configData.config,
+            domain:       srcDomain,
+            price_label:  onboardingState.selectedPrice?.label || null,
+          },
+        });
+      } catch (_) {}
+    }
+
+    // Validate by scraping the detail tab with the returned config
+    let scrapeResult = {};
+    if (detailTab && configData.config) {
+      try {
+        const scrapeResults = await chrome.scripting.executeScript({
+          target: { tabId: detailTab.id },
+          func:   scrapeVehicleForValidation,
+          args:   [configData.config.detail_page || {}],
+        });
+        scrapeResult = scrapeResults?.[0]?.result || {};
+      } catch (e) {
+        console.log('[Onboarding] scrape validation failed:', e.message);
+      }
+    }
+
+    // If user picked a price, trust that over what we scraped
+    const displayPrice = onboardingState.selectedPrice?.value || scrapeResult.price || null;
+
+    showOnboardingStep('validation', {
+      fields: [
+        { key: 'title',  label: 'Vehicle',  value: scrapeResult.rawTitle || null },
+        { key: 'vin',    label: 'VIN',      value: scrapeResult.vin      || null },
+        { key: 'price',  label: 'Price',    value: displayPrice                  },
+        { key: 'photos', label: 'Photos',   value: scrapeResult.photoCount ? `${scrapeResult.photoCount} found` : null },
+      ],
+    });
+
+  } catch (err) {
+    console.error('[Onboarding] submitOnboardingConfig failed:', err);
+    onboardingState.attemptCount++;
+    if (onboardingState.attemptCount >= 5) {
+      showOnboardingStep('manual_needed');
+    } else {
+      showOnboardingStep('validation', {
+        fields: [],
+        error:  err.message,
+      });
+    }
+  }
+}
+
+// Standalone — serialized and injected into the detail page tab
+function captureDetailHtmlFragments() {
+  const tryCapture = (selectors, label) => {
+    for (const sel of selectors) {
+      try {
+        const el = document.querySelector(sel);
+        if (el) return `<!-- ${label} -->\n${el.outerHTML.substring(0, 3000)}`;
+      } catch (_) {}
+    }
+    return null;
+  };
+
+  const fragments = [
+    tryCapture(['dl.pricing-detail', '#price-box', '.vdp-price-box', '.price-box',
+                '.vehicle-pricing', '[class*="pricing"]'], 'PRICES'),
+    tryCapture(['dl.dl-horizontal', '.basic-info-component', '.vehicle-details',
+                '.specs-table', '[class*="spec"]', '.vehicle-info'], 'SPECS'),
+    tryCapture(['.vdp-gallery', '.media-gallery', '[class*="gallery"]',
+                '.vehicle-photos', '.photo-gallery'], 'GALLERY'),
+  ].filter(Boolean);
+
+  return fragments.join('\n\n');
+}
+
+// Standalone — serialized and injected into the detail page tab
+function scrapeVehicleForValidation(selectors) {
+  const safeQuery = (sel) => {
+    try { return document.querySelector(sel)?.textContent?.trim() || null; }
+    catch (_) { return null; }
+  };
+
+  const bodyText = document.body?.innerText || '';
+  const title    = document.querySelector('h1')?.textContent?.trim() ||
+                   document.title?.replace(/ [-|].*/, '') || '';
+
+  // VIN — 17-char alphanum pattern in page text
+  const vinMatch = bodyText.match(/\b[A-HJ-NPR-Z0-9]{17}\b/);
+
+  // Price — from selector first, then any prominent price element
+  let price = null;
+  if (selectors?.sale_price) {
+    const el = safeQuery(selectors.sale_price);
+    if (el) { const m = el.match(/\$[\d,]+/); if (m) price = m[0]; }
+  }
+  if (!price) {
+    const els = document.querySelectorAll('[class*="price"],[class*="Price"]');
+    for (const el of els) {
+      const m = el.textContent?.match(/\$[\d,]+/);
+      if (m && parseInt(m[0].replace(/[$,]/g, '')) > 1000) { price = m[0]; break; }
+    }
+  }
+
+  // Photos — count visible images larger than thumbnails
+  const photoSel = selectors?.photos || 'img';
+  let photoCount = 0;
+  try {
+    document.querySelectorAll(photoSel).forEach(img => {
+      if ((img.naturalWidth || img.width) > 100) photoCount++;
+    });
+  } catch (_) {}
+
+  return {
+    rawTitle:   title.substring(0, 60),
+    vin:        vinMatch?.[0] || null,
+    price:      price,
+    photoCount: photoCount,
+  };
 }
 
 async function loadTaglineSettings() {
@@ -1532,6 +2183,29 @@ async function generateMarketplaceDescription(theme) {
   }
 }
 
+async function syncSoldNotificationsFromBackend() {
+  const { token } = await chrome.storage.local.get('token');
+  if (!token) return;
+  try {
+    const resp = await apiFetch(`${API_BASE}/listings/`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!resp.ok) return;
+    const listings = await resp.json();
+    const soldIds = listings.filter(l => l.is_sold).map(l => l.id);
+    if (soldIds.length > 0) {
+      await chrome.storage.local.set({ sold_notifications: soldIds });
+      chrome.action.setBadgeText({ text: '🔴' });
+      chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+    } else {
+      await chrome.storage.local.remove('sold_notifications');
+      chrome.action.setBadgeText({ text: '' });
+    }
+  } catch (err) {
+    console.error('DealersOrbit: Could not sync sold notifications:', err);
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
   // ── Language toggle ──────────────────────────────────────────
@@ -1746,6 +2420,7 @@ async function init() {
       return;
     }
 
+    await syncSoldNotificationsFromBackend();
     await checkAndStartOnboarding(freshUser);
 
     renderQueue();
@@ -1932,7 +2607,18 @@ loginBtn.addEventListener("click", async () => {
     });
     const user = await userResp.json();
 
-    // Save to extension storage
+    // Clear all previous user's data if switching accounts
+    const { user: prevUser } = await chrome.storage.local.get('user');
+    if (prevUser?.email && prevUser.email !== user.email) {
+      console.log('DealersOrbit: Account switch detected, clearing previous user data');
+      await chrome.storage.local.remove([
+        'pending_review_queue', 'queue',
+        'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
+        'sold_notifications', 'last_sold_check',
+        'dealer_configured', 'config_status', 'subscription_cache',
+        'current_generating_vin', 'userLanguage',
+      ]);
+    }
     await chrome.storage.local.set({ token: access_token, user });
 
     showLoggedIn(user);
@@ -1958,7 +2644,17 @@ document.getElementById("password").addEventListener("keydown", (e) => {
 
 // ── Logout ────────────────────────────────────────────────────
 logoutBtn.addEventListener("click", async () => {
-  await chrome.storage.local.remove(["token", "user"]);
+  if (queueInterval) { clearInterval(queueInterval); queueInterval = null; }
+  await chrome.storage.local.remove([
+    'token', 'user', 'subscription_cache',
+    'pending_review_queue', 'queue',
+    'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
+    'sold_notifications', 'last_sold_check',
+    'dealer_configured', 'config_status',
+    'onboarding_card_selector', 'onboarding_detail_url',
+    'onboarding_prices', 'onboarding_waiting_detail',
+    'current_generating_vin', 'userLanguage', 'dealersorbit_migrated',
+  ]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
 });
@@ -2120,6 +2816,10 @@ async function renderQueue() {
     await chrome.storage.local.get(["queue", "pending_review_queue"]);
 
   showScreen(dashboardScreen);
+
+  // ── Review banner ─────────────────────────────────────────
+  const { config_status: _cs } = await chrome.storage.local.get('config_status');
+  if (_cs === 'pending_review') showReviewBanner();
 
   // ── Stale banner ──────────────────────────────────────────
   const { stale_review_notice } = await chrome.storage.local.get("stale_review_notice");
@@ -2376,6 +3076,85 @@ document.querySelectorAll(".modal-option").forEach(btn => {
   });
 });
 
+async function loadSavedScripts() {
+  const { token } = await chrome.storage.local.get('token');
+  if (!token) return [];
+  try {
+    const resp = await apiFetch(`${API_BASE}/saved-scripts/`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    savedScripts = data.scripts || [];
+    return savedScripts;
+  } catch (err) {
+    console.error('Could not load saved scripts:', err);
+    return [];
+  }
+}
+
+function renderSavedScriptsList() {
+  const section  = document.getElementById('savedScriptsSection');
+  const listEl   = document.getElementById('savedScriptsList');
+  const inputSec = document.getElementById('promptInputSection');
+  if (!section || !listEl) return;
+
+  if (savedScripts.length === 0) {
+    section.style.display  = 'none';
+    return;
+  }
+
+  section.style.display  = 'block';
+
+  listEl.innerHTML = savedScripts.map(s => `
+    <div class='saved-script-option' data-script-id='${s.id}'>
+      <div style='flex:1;min-width:0'>
+        <div class='saved-script-name'>${s.name}</div>
+        <div class='saved-script-meta'>Used ${s.use_count} times</div>
+      </div>
+      <button class='saved-script-delete' data-delete-id='${s.id}' title='Delete'>✕</button>
+    </div>
+  `).join('');
+
+  listEl.querySelectorAll('.saved-script-option').forEach(option => {
+    option.addEventListener('click', async (e) => {
+      if (e.target.closest('.saved-script-delete')) return;
+      const scriptId = parseInt(option.dataset.scriptId);
+      const script   = savedScripts.find(s => s.id === scriptId);
+      if (!script) return;
+
+      listEl.querySelectorAll('.saved-script-option').forEach(o => o.classList.remove('selected'));
+      option.classList.add('selected');
+      selectedSavedScript = script;
+
+      section.style.display  = 'none';
+      inputSec.style.display = 'block';
+      const promptInput = document.getElementById('customPrompt');
+      if (promptInput) { promptInput.value = script.prompt_text; promptInput.focus(); }
+
+      const { token } = await chrome.storage.local.get('token');
+      apiFetch(`${API_BASE}/saved-scripts/${scriptId}/use`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
+      }).catch(() => {});
+    });
+  });
+
+  listEl.querySelectorAll('.saved-script-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const scriptId = parseInt(btn.dataset.deleteId);
+      const { token } = await chrome.storage.local.get('token');
+      try {
+        await apiFetch(`${API_BASE}/saved-scripts/${scriptId}`, {
+          method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` }
+        });
+        savedScripts = savedScripts.filter(s => s.id !== scriptId);
+        renderSavedScriptsList();
+      } catch (err) { console.error('Delete failed:', err); }
+    });
+  });
+}
+
 // Step 2 — choose theme
 document.querySelectorAll(".theme-btn").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -2385,6 +3164,11 @@ document.querySelectorAll(".theme-btn").forEach(btn => {
 
     if (modalSelectedTheme === "custom") {
       modalStep2.style.display = "none";
+      selectedSavedScript    = null;
+      currentGeneratedPrompt = null;
+      document.getElementById('customPrompt').value = '';
+      document.getElementById('promptInputSection').style.display = 'none';
+      loadSavedScripts().then(renderSavedScriptsList);
       modalStep3.style.display = "block";
     } else {
       generateModal.style.display = "none";
@@ -2467,13 +3251,23 @@ document.getElementById("backToStep2")?.addEventListener("click", () => {
 
 document.getElementById("backToStep3")?.addEventListener("click", () => {
   modalStep4.style.display = "none";
+  document.getElementById('promptInputSection').style.display = 'none';
   modalStep3.style.display = "block";
+});
+
+document.getElementById('writeNewPromptBtn')?.addEventListener('click', () => {
+  selectedSavedScript = null;
+  document.getElementById('customPrompt').value = '';
+  document.getElementById('promptInputSection').style.display = 'block';
+  document.getElementById('customPrompt').focus();
 });
 
 // Step 3 — preview custom script
 document.getElementById("previewScriptBtn")?.addEventListener("click", async () => {
   const prompt = document.getElementById("customPrompt")?.value.trim();
   if (!prompt) return;
+
+  currentGeneratedPrompt = prompt;
 
   const btn = document.getElementById("previewScriptBtn");
   btn.textContent = "Generating script...";
@@ -2498,6 +3292,12 @@ document.getElementById("previewScriptBtn")?.addEventListener("click", async () 
     const data = await resp.json();
 
     document.getElementById("scriptPreview").value = data.script;
+    document.getElementById("saveScriptNameInput").value = '';
+    document.getElementById("saveScriptSuccess").style.display = 'none';
+    const saveBtn = document.getElementById("saveScriptBtn");
+    saveBtn.textContent = 'Save';
+    saveBtn.disabled = false;
+
     modalStep3.style.display = "none";
     modalStep4.style.display = "block";
   } catch (err) {
@@ -2505,6 +3305,40 @@ document.getElementById("previewScriptBtn")?.addEventListener("click", async () 
   } finally {
     btn.textContent = "Preview Script →";
     btn.disabled = false;
+  }
+});
+
+// Step 4 — save prompt
+document.getElementById('saveScriptBtn')?.addEventListener('click', async () => {
+  const name   = document.getElementById('saveScriptNameInput')?.value.trim();
+  const prompt = currentGeneratedPrompt;
+  if (!name) { document.getElementById('saveScriptNameInput')?.focus(); return; }
+  if (!prompt) return;
+
+  const saveBtn = document.getElementById('saveScriptBtn');
+  saveBtn.textContent = 'Saving...';
+  saveBtn.disabled    = true;
+
+  try {
+    const { token } = await chrome.storage.local.get('token');
+    const resp = await apiFetch(`${API_BASE}/saved-scripts/`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ name, prompt_text: prompt }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'Save failed');
+    }
+    const saved = await resp.json();
+    savedScripts.push(saved);
+    document.getElementById('saveScriptSuccess').style.display = 'block';
+    saveBtn.textContent = '✓ Saved';
+    setTimeout(() => { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }, 2000);
+  } catch (err) {
+    alert(err.message || 'Failed to save. Please try again.');
+    saveBtn.textContent = 'Save';
+    saveBtn.disabled    = false;
   }
 });
 

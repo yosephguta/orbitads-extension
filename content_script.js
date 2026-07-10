@@ -320,11 +320,15 @@ function scrapeWithConfig(card, config) {
   const mileage = mileageEls
     .find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
 
-  // Get link
+  // Get link — try href first, then common data attributes used by some platforms
   const linkEl = card.querySelector(ext.link.selector);
-  const href = linkEl?.getAttribute('href') || '';
+  const href = linkEl?.getAttribute('href') ||
+               linkEl?.getAttribute('data-vdp-url') ||
+               linkEl?.getAttribute('data-href') ||
+               linkEl?.getAttribute('data-url') ||
+               card.getAttribute('data-vdp-url') || '';
   const listingUrl = href.startsWith('http') ? href :
-    window.location.origin + href;
+    (href ? window.location.origin + href : '');
 
   // make: try dedicated make selector first, fall back to parsing title text
   const titleText = getText(ext.title.selector) || '';
@@ -854,6 +858,45 @@ async function ensurePublicPrivacy() {
   }
 }
 
+async function enableAiLabel() {
+  // Find the "AI label off" button by its visible text and click it to open the dialog
+  const aiLabelSpan = Array.from(document.querySelectorAll('span'))
+    .find(el => el.textContent.trim() === 'AI label off');
+
+  if (!aiLabelSpan) {
+    console.log('DealersOrbit: AI label button not found, skipping');
+    return;
+  }
+
+  const aiLabelBtn = aiLabelSpan.closest('[role="button"]') || aiLabelSpan.parentElement;
+  aiLabelBtn.click();
+  await sleep(1000);
+
+  // Wait for the labeling dialog
+  const dialog = await waitForElement('[aria-label="Labeling your content"]', 5000);
+  if (!dialog) {
+    console.log('DealersOrbit: AI label dialog did not appear, skipping');
+    return;
+  }
+
+  // Toggle the switch on if it isn't already
+  const toggle = dialog.querySelector('input[aria-label="Add AI label"][role="switch"]') ||
+                 document.querySelector('input[aria-label="Add AI label"][role="switch"]');
+
+  if (toggle && toggle.getAttribute('aria-checked') !== 'true') {
+    toggle.click();
+    await sleep(500);
+  }
+
+  // Dismiss with "Got it"
+  const gotItBtn = document.querySelector('[aria-label="Got it"]');
+  if (gotItBtn) {
+    gotItBtn.click();
+    await sleep(600);
+    console.log('DealersOrbit: AI label enabled');
+  }
+}
+
 async function openPostComposer() {
   // Step 1: click the "What's on your mind?" area to open the full composer
   const createPostBtn = Array.from(document.querySelectorAll('[role="button"]')).find(
@@ -916,9 +959,6 @@ async function uploadFilesToPost(photos, videoUrl) {
     return;
   }
 
-  // Use the home-feed file input (the Photo/video shortcut button's hidden input).
-  // Setting files on it causes Facebook to open the photo post composer directly —
-  // no need to open a text composer first, which avoids the two-dialog split.
   const fileInput =
     document.querySelector('input[type="file"][multiple]') ||
     document.querySelector('input[type="file"]');
@@ -928,63 +968,142 @@ async function uploadFilesToPost(photos, videoUrl) {
   console.log("DealersOrbit: file input accept:", fileInput.accept);
   const acceptsVideo = /video/i.test(fileInput.accept);
 
-  const dt = new DataTransfer();
+  if (videoUrl && acceptsVideo && photoUrls.length > 0) {
+    // ── Two-pass: video first, then photos once Facebook finishes processing ──
 
-  // ── Photos — fetch all in parallel ────────────────────────────
-  const photoFiles = await Promise.all(photoUrls.map(async (url, i) => {
-    try {
-      const resp = await fetch(url);
-      if (!resp.ok) { console.warn(`DealersOrbit: photo ${i + 1} HTTP ${resp.status}`); return null; }
-      const blob = await resp.blob();
-      console.log(`DealersOrbit: photo ${i + 1}: ${(blob.size / 1024).toFixed(0)}KB`);
-      const ext = url.split('?')[0].split('.').pop().toLowerCase() || 'jpg';
-      return new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' });
-    } catch (e) {
-      console.warn(`DealersOrbit: photo ${i + 1} error:`, e.message);
-      return null;
-    }
-  }));
-  photoFiles.filter(Boolean).forEach(f => dt.items.add(f));
+    // Start downloading photos in the background while we deal with video
+    const photoDownloadPromise = Promise.all(photoUrls.map(async (url, i) => {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const blob = await resp.blob();
+        const ext = url.split('?')[0].split('.').pop().toLowerCase() || 'jpg';
+        return new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' });
+      } catch (e) {
+        console.warn(`DealersOrbit: photo ${i + 1} error:`, e.message);
+        return null;
+      }
+    }));
 
-  // ── Video ──────────────────────────────────────────────────────
-  if (videoUrl && acceptsVideo) {
+    // Pass 1: inject video only → opens the composer
+    console.log('DealersOrbit: Downloading video...');
     try {
       const resp = await fetch(videoUrl);
       if (resp.ok) {
         const blob = await resp.blob();
         console.log('DealersOrbit: video size:', (blob.size / 1024 / 1024).toFixed(1), 'MB');
+        const dt = new DataTransfer();
         dt.items.add(new File([blob], 'vehicle-ad.mp4', { type: 'video/mp4' }));
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+        console.log('DealersOrbit: Video injected — waiting for composer...');
       } else {
         console.log('DealersOrbit: video download failed:', resp.status);
       }
     } catch (err) {
       console.log('DealersOrbit: video fetch error:', err.message);
     }
-  } else if (videoUrl) {
-    console.log('DealersOrbit: file input photos-only — skipping video');
+
+    // Wait for the Lexical editor (composer) to open
+    await new Promise((resolve) => {
+      const deadline = Date.now() + 15000;
+      const check = setInterval(() => {
+        const editor = document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
+        if (editor || Date.now() > deadline) { clearInterval(check); resolve(); }
+      }, 300);
+    });
+
+    // Wait for Facebook to finish processing the video.
+    // Facebook shows a "Processing video…" or spinner on the thumbnail while it works.
+    // We watch for a <video> element to appear inside the dialog (thumbnail ready)
+    // and for any "processing" text to disappear. Cap at 45s.
+    console.log('DealersOrbit: Waiting for Facebook to finish processing video...');
+    await new Promise((resolve) => {
+      const deadline = Date.now() + 45000;
+      const check = setInterval(() => {
+        const dialog = document.querySelector('[role="dialog"]');
+        const ctx    = dialog || document;
+        const videoEl        = ctx.querySelector('video');
+        const stillProcessing = ctx.innerText?.toLowerCase().includes('processing');
+        if ((videoEl && !stillProcessing) || Date.now() > deadline) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 1000);
+    });
+    await sleep(1500);
+    console.log('DealersOrbit: Video processed — injecting photos now...');
+
+    // Pass 2: find the file input inside the now-open composer and add photos
+    const photoFiles = (await photoDownloadPromise).filter(Boolean);
+    if (photoFiles.length > 0) {
+      // After the composer opens, Facebook renders another file input inside the dialog
+      const composerInput =
+        document.querySelector('[role="dialog"] input[type="file"]') ||
+        document.querySelector('input[type="file"][multiple]') ||
+        document.querySelector('input[type="file"]');
+
+      if (composerInput) {
+        const dt = new DataTransfer();
+        photoFiles.forEach(f => dt.items.add(f));
+        composerInput.files = dt.files;
+        composerInput.dispatchEvent(new Event('change', { bubbles: true }));
+        composerInput.dispatchEvent(new Event('input', { bubbles: true }));
+        console.log(`DealersOrbit: ${photoFiles.length} photos added after video`);
+        await sleep(3000);
+      } else {
+        console.log('DealersOrbit: Could not find composer input for photos');
+      }
+    }
+
+  } else {
+    // No video (or photos-only) — single pass, original behaviour
+    const allFiles = [];
+
+    if (videoUrl && acceptsVideo) {
+      try {
+        const resp = await fetch(videoUrl);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          allFiles.push(new File([blob], 'vehicle-ad.mp4', { type: 'video/mp4' }));
+        }
+      } catch (err) {
+        console.log('DealersOrbit: video fetch error:', err.message);
+      }
+    }
+
+    for (let i = 0; i < photoUrls.length; i++) {
+      try {
+        const resp = await fetch(photoUrls[i]);
+        if (!resp.ok) continue;
+        const blob = await resp.blob();
+        const ext = photoUrls[i].split('?')[0].split('.').pop().toLowerCase() || 'jpg';
+        allFiles.push(new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' }));
+      } catch (e) {
+        console.warn(`DealersOrbit: photo ${i + 1} error:`, e.message);
+      }
+    }
+
+    if (allFiles.length > 0) {
+      const dt = new DataTransfer();
+      allFiles.forEach(f => dt.items.add(f));
+      fileInput.files = dt.files;
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+      console.log(`DealersOrbit: attached ${allFiles.length} files`);
+    }
+
+    // Wait for composer
+    await new Promise((resolve) => {
+      const deadline = Date.now() + 12000;
+      const check = setInterval(() => {
+        const editor = document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
+        if (editor || Date.now() > deadline) { clearInterval(check); resolve(); }
+      }, 300);
+    });
   }
 
-  if (dt.files.length === 0) {
-    console.log("DealersOrbit: no files to attach");
-    return;
-  }
-
-  // Setting files opens Facebook's photo post composer automatically
-  fileInput.files = dt.files;
-  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-  console.log(`DealersOrbit: attached ${dt.files.length} files`);
-
-  // Wait for a contenteditable (caption box) to appear in the photo composer.
-  // Facebook's photo composer doesn't consistently use role="dialog" so we
-  // watch for any Lexical editor appearing on the page.
-  await new Promise((resolve) => {
-    const deadline = Date.now() + 12000;
-    const check = setInterval(() => {
-      const editor = document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
-      if (editor || Date.now() > deadline) { clearInterval(check); resolve(); }
-    }, 300);
-  });
   await sleep(1000);
   console.log("DealersOrbit: photo composer ready");
 }
@@ -1091,6 +1210,9 @@ async function tryFacebookPostFlow() {
 
     updateBanner("Setting privacy to Public...");
     await ensurePublicPrivacy();
+
+    updateBanner("Adding AI label...");
+    await enableAiLabel();
 
     updateBanner("Adding caption...");
     await addCaptionToPost(fb_post.caption);
@@ -1267,12 +1389,12 @@ async function tryFacebookAutoFill() {
   const v = fb_listing.vehicle;
   console.log("DealersOrbit: Starting form fill...", v);
 
-  // ── Step 1: Upload photos ─────────────────────────────────
-  await uploadPhotosToFacebook(fb_listing);
+  // ── Step 1: Upload video first ────────────────────────────
+  await uploadVideoToFacebook(fb_listing);
   await sleep(2000);
 
-  // ── Step 1b: Upload video ─────────────────────────────────
-  await uploadVideoToFacebook(fb_listing);
+  // ── Step 1b: Upload photos after video ────────────────────
+  await uploadPhotosToFacebook(fb_listing);
   await sleep(2000);
 
   // ── Step 2: Year ──────────────────────────────────────────
@@ -1899,6 +2021,24 @@ function sleep(ms) {
 
 // ── Main ──────────────────────────────────────────────────────
 async function init() {
+  // Onboarding: detect if this is the detail page we're waiting for
+  const { onboarding_waiting_detail, onboarding_detail_url } =
+    await chrome.storage.local.get(['onboarding_waiting_detail', 'onboarding_detail_url']);
+
+  if (onboarding_waiting_detail && onboarding_detail_url) {
+    try {
+      const stored  = new URL(onboarding_detail_url);
+      const current = new URL(window.location.href);
+      if (stored.hostname === current.hostname && stored.pathname === current.pathname) {
+        console.log('DealersOrbit: Onboarding detail page detected');
+        await chrome.storage.local.remove('onboarding_waiting_detail');
+        chrome.runtime.sendMessage({ type: 'ONBOARDING_ON_DETAIL_PAGE' });
+        await sleep(1500);
+        startPhotoClickInterception();
+      }
+    } catch (_) {}
+  }
+
   // Get config for this domain
   const config = await getDealershipConfig();
 
@@ -1994,3 +2134,163 @@ new MutationObserver(() => {
     setTimeout(init, 1500);
   }
 }).observe(document.body, { childList: true, subtree: true });
+
+// ── Onboarding: message listener ─────────────────────────────
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'START_CARD_DETECTION') {
+    console.log('DealersOrbit: Card detection started');
+    startCardClickInterception();
+    sendResponse({ success: true });
+    return true;
+  }
+  if (message.type === 'START_PHOTO_DETECTION') {
+    console.log('DealersOrbit: Photo detection started');
+    startPhotoClickInterception();
+    sendResponse({ success: true });
+    return true;
+  }
+});
+
+// ── Onboarding: card click interception ──────────────────────
+let cardInterceptionActive  = false;
+let photoInterceptionActive = false;
+let photoClickHandler       = null;
+let onboardingState_cardSelector = null;
+
+function startCardClickInterception() {
+  if (cardInterceptionActive) return;
+  cardInterceptionActive = true;
+
+  const indicator = document.createElement('div');
+  indicator.id = 'dealersorbit-watching';
+  indicator.style.cssText = `
+    position:fixed;bottom:20px;right:20px;
+    background:#1a56db;color:white;
+    padding:8px 14px;border-radius:20px;
+    font-size:12px;font-family:-apple-system,sans-serif;font-weight:600;
+    z-index:999999;box-shadow:0 2px 8px rgba(0,0,0,0.2);pointer-events:none;
+  `;
+  indicator.textContent = '🔍 DealersOrbit is watching — click any vehicle';
+  document.body.appendChild(indicator);
+
+  document.addEventListener('click', onCardClick, { capture: true });
+}
+
+async function onCardClick(e) {
+  const link = e.target.closest('a[href]');
+  if (!link) return;
+
+  const href = link.getAttribute('href') || '';
+  const isVehicleLink =
+    href.includes('/used/') || href.includes('/inventory/') ||
+    href.includes('/vehicle')  || href.includes('/vdp') ||
+    href.includes('/car/')     || href.includes('/auto/') ||
+    href.includes('/new/')     || href.includes('-for-sale');
+
+  if (!isVehicleLink) return;
+
+  const cardSelector = findRepeatingAncestor(link);
+  if (cardSelector) {
+    console.log('DealersOrbit: Found card selector:', cardSelector);
+    onboardingState_cardSelector = cardSelector;
+  }
+
+  document.removeEventListener('click', onCardClick, { capture: true });
+  document.getElementById('dealersorbit-watching')?.remove();
+  cardInterceptionActive = false;
+
+  chrome.runtime.sendMessage({
+    type:         'CARD_CLICKED',
+    cardSelector: cardSelector,
+    detailUrl:    link.href,
+  });
+}
+
+function findRepeatingAncestor(element) {
+  let current = element;
+  for (let i = 0; i < 8; i++) {
+    current = current.parentElement;
+    if (!current || current === document.body) break;
+
+    const tag     = current.tagName.toLowerCase();
+    const classes = Array.from(current.classList)
+      .filter(c => c.length > 1 && !c.match(/^(active|hover|selected|first|last|open|show)$/i))
+      .slice(0, 2)
+      .join('.');
+
+    if (!classes) continue;
+
+    const selector = `${tag}.${classes}`;
+    try {
+      const matches = document.querySelectorAll(selector);
+      if (matches.length >= 3) {
+        const validCards = Array.from(matches).filter(el =>
+          el.querySelector('img') && el.querySelector('a[href]')
+        );
+        if (validCards.length >= 3) return selector;
+      }
+    } catch (_) { continue; }
+  }
+  return null;
+}
+
+// ── Onboarding: photo click interception ─────────────────────
+function startPhotoClickInterception() {
+  if (photoInterceptionActive) return;
+  photoInterceptionActive = true;
+
+  let indicator = document.getElementById('dealersorbit-watching');
+  if (indicator) {
+    indicator.textContent = '📸 Click an exterior photo of the car';
+  } else {
+    indicator = document.createElement('div');
+    indicator.id = 'dealersorbit-watching';
+    indicator.style.cssText = `
+      position:fixed;bottom:20px;right:20px;
+      background:#1a56db;color:white;
+      padding:8px 14px;border-radius:20px;
+      font-size:12px;font-family:-apple-system,sans-serif;font-weight:600;
+      z-index:999999;box-shadow:0 2px 8px rgba(0,0,0,0.2);pointer-events:none;
+    `;
+    indicator.textContent = '📸 Click an exterior photo of the car';
+    document.body.appendChild(indicator);
+  }
+
+  let photoClickCount = 0;
+
+  photoClickHandler = (e) => {
+    const img = e.target.closest('img');
+    if (!img) return;
+    if (img.naturalWidth < 100 || img.naturalHeight < 100) return;
+
+    const src      = img.getAttribute('data-src') || img.src || '';
+    const selector = getImgSelector(img);
+
+    photoClickCount++;
+
+    if (photoClickCount === 1) {
+      chrome.runtime.sendMessage({ type: 'PHOTO_CLICKED', photoType: 'exterior', src, selector });
+      const ind = document.getElementById('dealersorbit-watching');
+      if (ind) {
+        ind.textContent = '✓ Exterior noted! Now click an interior photo (dashboard / seats)';
+        ind.style.background = '#16a34a';
+      }
+    } else if (photoClickCount === 2) {
+      chrome.runtime.sendMessage({ type: 'PHOTO_CLICKED', photoType: 'interior', src, selector });
+      document.removeEventListener('click', photoClickHandler, { capture: true });
+      document.getElementById('dealersorbit-watching')?.remove();
+      photoInterceptionActive = false;
+      chrome.runtime.sendMessage({ type: 'PHOTOS_DONE' });
+    }
+  };
+
+  document.addEventListener('click', photoClickHandler, { capture: true });
+}
+
+function getImgSelector(img) {
+  const parent = img.parentElement;
+  if (!parent) return 'img';
+  const parentTag     = parent.tagName.toLowerCase();
+  const parentClasses = Array.from(parent.classList).slice(0, 2).join('.');
+  return parentClasses ? `${parentTag}.${parentClasses} img` : 'img';
+}

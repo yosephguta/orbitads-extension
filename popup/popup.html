@@ -80,7 +80,7 @@
     <div id="soldBanner" class="sold-banner" style="display:none"></div>
     <div id="staleBanner" class="resume-banner" style="display:none"></div>
     <div id="reviewBanner" style="display:none;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#92400e;line-height:1.4;">
-      ⚠ Your site config is auto-generated and under review. It may have minor issues but is usable now. We'll optimize it within 24 hours.
+      ⚠️ Your site configuration is still under review. You can start importing vehicles now — it may have minor issues but will be fully optimized by tomorrow.
     </div>
 
     <!-- FB Countdown -->
@@ -168,6 +168,7 @@
         <button class="btn-back-modal" id="backToStep1">← Back</button>
         <p class="modal-question">Pick a theme for your ad</p>
         <div class="theme-grid">
+          <button class="theme-btn" data-theme="custom">✏️ Custom</button>
           <button class="theme-btn" data-theme="family">👨‍👩‍👧 Family</button>
           <button class="theme-btn" data-theme="sporty">🏎️ Sporty</button>
           <button class="theme-btn" data-theme="luxury">💎 Luxury</button>
@@ -175,29 +176,83 @@
           <button class="theme-btn" data-theme="commuter">🏙️ Commuter</button>
           <button class="theme-btn" data-theme="eco">🌿 Eco</button>
           <button class="theme-btn" data-theme="first_car">🎉 First Car</button>
-          <button class="theme-btn" data-theme="custom">✏️ Custom</button>
         </div>
       </div>
 
       <!-- Step 3: Custom theme -->
+      <!-- Step 3: Custom theme — write new + saved prompts -->
       <div class="modal-step" id="modalStep3" style="display:none">
         <button class="btn-back-modal" id="backToStep2">← Back</button>
-        <p class="modal-question">Describe your ad style</p>
-        <p class="modal-hint">Tell us the vibe, a joke to open with, or paste a script idea. Claude will write a script
-          based on your input.</p>
-        <textarea id="customPrompt" class="custom-prompt-input"
-          placeholder="e.g. Start with a funny joke about traffic, then talk about how perfect this truck is for the weekend warrior who needs to haul stuff but also wants to look good doing it..."></textarea>
-        <button class="btn-primary" id="previewScriptBtn">Preview Script →</button>
+        <p class="modal-question">Custom Ad Script</p>
+
+        <!-- Always-visible: write new prompt button -->
+        <button id="writeNewPromptBtn" class="write-new-prompt-btn">
+          ✏️ Write a new prompt
+        </button>
+
+        <!-- Saved scripts list — shown below when user has saved scripts -->
+        <div id="savedScriptsSection" style="display:none;margin-top:16px">
+          <p style="font-size:12px;font-weight:700;color:#374151;margin:0 0 8px">
+            Your saved prompts
+          </p>
+          <div id="savedScriptsList"></div>
+        </div>
+
+        <!-- Prompt input — shown when user clicks Write new or selects a saved prompt -->
+        <div id="promptInputSection" style="display:none;margin-top:16px">
+          <p class="modal-hint">
+            Describe your ad style, a joke to open with, or paste a script idea.
+            Claude will write a script based on your input.
+          </p>
+          <textarea id="customPrompt" class="custom-prompt-input"
+            placeholder="e.g. Start with a funny joke about traffic, then talk about how perfect this truck is for the weekend..."></textarea>
+          <button class="btn-primary" id="previewScriptBtn" style="width:100%">
+            Preview Script →
+          </button>
+        </div>
       </div>
 
-      <!-- Step 4: Script preview -->
+      <!-- Step 4: Script preview + save option -->
       <div class="modal-step" id="modalStep4" style="display:none">
         <button class="btn-back-modal" id="backToStep3">← Back</button>
         <p class="modal-question">Review your script</p>
         <p class="modal-hint">Edit if needed, then generate your ad.</p>
         <textarea id="scriptPreview" class="script-preview-input"></textarea>
+
+        <!-- Save script option -->
+        <div id="saveScriptSection" style="
+          background:#f9fafb;
+          border:1px solid #e5e7eb;
+          border-radius:8px;
+          padding:12px;
+          margin-bottom:12px;
+        ">
+          <p style="font-size:12px;font-weight:700;color:#374151;margin:0 0 8px">
+            💾 Save this prompt for future use?
+          </p>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="saveScriptNameInput"
+                   placeholder="Name this prompt (e.g. Funny Traffic Opener)"
+                   style="flex:1;padding:8px;border:1px solid #d1d5db;
+                          border-radius:6px;font-size:12px;outline:none">
+            <button class="btn-small" id="saveScriptBtn"
+                    style="background:#16a34a;white-space:nowrap;padding:8px 12px">
+              Save
+            </button>
+          </div>
+          <div id="saveScriptSuccess" style="
+            display:none;
+            font-size:11px;
+            color:#16a34a;
+            margin-top:6px;
+            font-weight:600;
+          ">✓ Prompt saved!</div>
+        </div>
+
         <div class="modal-actions">
-          <button class="btn-primary" id="confirmGenerateBtn">Generate Ad →</button>
+          <button class="btn-primary" id="confirmGenerateBtn" style="width:100%">
+            Generate Ad →
+          </button>
         </div>
       </div>
 
@@ -686,14 +741,14 @@
     </div>
   </div>
 
-  <!-- Onboarding overlay — shown on first login when dealership_url is set -->
+  <!-- New onboarding wizard overlay -->
   <div id="onboardingOverlay" style="
     display:none;
     position:fixed;
     inset:0;
-    background:rgba(13,31,60,0.92);
-    backdrop-filter:blur(4px);
-    z-index:1001;
+    background:rgba(0,0,0,0.85);
+    z-index:500;
+    flex-direction:column;
     align-items:center;
     justify-content:center;
     padding:20px;
@@ -701,29 +756,22 @@
     <div style="
       background:white;
       border-radius:16px;
-      padding:28px 24px;
-      text-align:center;
-      max-width:320px;
       width:100%;
+      max-width:340px;
+      overflow:hidden;
     ">
-      <div id="onboardingIcon" style="font-size:36px;margin-bottom:12px">⚙️</div>
-      <h2 id="onboardingTitle" style="font-size:16px;font-weight:700;color:#111827;margin:0 0 8px;">
-        Setting Up Your Site
-      </h2>
-      <p id="onboardingMessage" style="font-size:12px;color:#6b7280;margin:0 0 16px;line-height:1.5;">
-        We're configuring your dealership inventory page. This only happens once.
-      </p>
-      <div id="onboardingSpinner" style="display:none;margin:0 auto 16px;width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:#1a56db;border-radius:50%;animation:spin360 0.8s linear infinite;"></div>
-      <div id="onboardingStatus" style="font-size:12px;color:#374151;margin-bottom:16px;min-height:32px;line-height:1.5;"></div>
-      <button id="onboardingOpenBtn" style="display:none;width:100%;padding:10px;background:#1a56db;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;">
-        Open My Inventory Page →
-      </button>
-      <button id="onboardingConfigureBtn" style="display:none;width:100%;padding:10px;background:#f5a623;color:#0d1f3c;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;">
-        I'm on my inventory page — Configure Now
-      </button>
-      <button id="onboardingRetryBtn" style="display:none;width:100%;padding:10px;background:#f3f4f6;color:#374151;border:none;border-radius:8px;font-size:12px;cursor:pointer;">
-        Try Again
-      </button>
+      <!-- Progress bar -->
+      <div style="height:4px;background:#f3f4f6">
+        <div id="onboardingProgress" style="
+          height:100%;
+          background:#1a56db;
+          transition:width 0.3s;
+          width:0%;
+        "></div>
+      </div>
+
+      <!-- Step content — swapped by JS -->
+      <div id="onboardingStepContent" style="padding:24px"></div>
     </div>
   </div>
 

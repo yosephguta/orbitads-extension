@@ -12,6 +12,19 @@ chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
+// SESSION-LOCAL STORAGE (intentionally not synced to backend):
+// - pending_review_queue: vehicles being classified this session
+// - queue: video generation jobs in progress
+// - fb_listing/fb_post/fb_groups_post: transient Facebook posting data
+// - subscription_cache: 1hr cache, refreshed from backend on open
+//
+// BACKEND-SYNCED (persistent across devices):
+// - User settings (voice, language, tagline, etc.) via /auth/me
+// - Completed listings via /listings/
+// - Sold status via listings.is_sold
+// - Saved scripts via /saved-scripts/
+// - Subscription status via /auth/me
+
 // ── Inline configs ────────────────────────────────────────────
 const PROVIDER_CONFIGS = {
   dealer_inspire: {
@@ -242,12 +255,35 @@ function adaptBackendConfig(aiConfig, domain) {
   };
 }
 
+// ── Onboarding state (background) ────────────────────────────
+let onboardingState = {
+  cardSelector:    null,
+  detailUrl:       null,
+  exteriorClicked: null,
+  interiorClicked: null,
+  selectedPrice:   null,
+  configForNewCars: false,
+};
+
 // ── Message handler ───────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_CONFIG") {
     (async () => {
       const domain = message.domain;
+
+      // 0. Locally stored pending config from onboarding — bypasses domain restriction
+      //    because this is the user's own freshly-generated config
+      const { onboarding_pending_config } = await chrome.storage.local.get('onboarding_pending_config');
+      if (onboarding_pending_config?.config) {
+        const pendingDomain = (onboarding_pending_config.domain || '').replace(/^www\./, '');
+        const currentDomainStripped = domain.replace(/^www\./, '');
+        if (pendingDomain && currentDomainStripped === pendingDomain) {
+          console.log(`DealersOrbit: Using locally stored onboarding config for ${domain}`);
+          sendResponse({ config: adaptBackendConfig(onboarding_pending_config.config, domain), source: 'pending' });
+          return;
+        }
+      }
 
       // Domain restriction — only serve config for user's registered dealership
       const ADMIN_EMAILS = ['yoseph@jbakia.com', 'yosephfl@gmail.com'];
@@ -376,12 +412,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
 
-        // POST to backend
-        const resp = await fetch(`${API_BASE}/dealer-configs/generate-from-html`, {
+        // Always POST to prod — no auth needed, configs go to pending_review for manual approval
+        const resp = await fetch(`https://api.dealersorbit.com/api/v1/dealer-configs/generate-from-html`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ card_html: cardData.card_html, detail_html: detailHtml, source_url: tab.url }),
         });
+
+        // 409 = config already exists for this domain — treat as success, let user proceed
+        if (resp.status === 409) {
+          await chrome.storage.local.set({ dealer_configured: true, config_status: 'pending_review' });
+          sendResponse({ success: true, already_existed: true });
+          return;
+        }
 
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -547,8 +590,123 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'CARD_CLICKED') {
+    (async () => {
+      onboardingState.cardSelector = message.cardSelector;
+      onboardingState.detailUrl    = message.detailUrl;
+      console.log('DealersOrbit onboarding: card clicked, selector:', message.cardSelector);
+      await chrome.storage.local.set({
+        onboarding_card_selector:  message.cardSelector,
+        onboarding_detail_url:     message.detailUrl,
+        onboarding_waiting_detail: true,
+      });
+      sendResponse({ success: true });
+    })().catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'PHOTO_CLICKED') {
+    if (message.photoType === 'exterior') {
+      onboardingState.exteriorClicked = { src: message.src, selector: message.selector };
+    } else {
+      onboardingState.interiorClicked = { src: message.src, selector: message.selector };
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'PHOTOS_DONE') {
+    extractPricesFromDetailPage();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'FLAG_FOR_MANUAL_REVIEW') {
+    (async () => {
+      const { token, onboarding_config_id } =
+        await chrome.storage.local.get(['token', 'onboarding_config_id']);
+      if (token && onboarding_config_id) {
+        fetch(`https://api.dealersorbit.com/api/v1/dealer-configs/${onboarding_config_id}/flag-manual`, {
+          method: 'POST', headers: { 'Authorization': `Bearer ${token}` },
+        }).catch(() => {});
+      }
+      sendResponse({ success: true });
+    })().catch(() => sendResponse({ success: false }));
+    return true;
+  }
+
   return true;
 });
+
+async function extractPricesFromDetailPage() {
+  const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
+  const detailTab = tabs.find(t => t.active);
+  if (!detailTab) {
+    chrome.runtime.sendMessage({ type: 'SHOW_PRICE_SELECTION', prices: [] });
+    return;
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: detailTab.id },
+      func:   extractAllPrices,
+    });
+    const prices = results?.[0]?.result || [];
+    console.log('DealersOrbit onboarding: extracted prices:', prices);
+    await chrome.storage.local.set({ onboarding_prices: prices });
+    chrome.runtime.sendMessage({ type: 'SHOW_PRICE_SELECTION', prices });
+  } catch (err) {
+    console.error('DealersOrbit: price extraction failed:', err);
+    chrome.runtime.sendMessage({ type: 'SHOW_PRICE_SELECTION', prices: [] });
+  }
+}
+
+function extractAllPrices() {
+  const prices = [];
+  const seen   = new Set();
+
+  // Strategy 1: dl dt/dd price table (Dealer.com / DDC)
+  document.querySelectorAll('dl dt, dl.pricing-detail dt').forEach(dt => {
+    const dd = dt.nextElementSibling;
+    if (!dd) return;
+    const label   = dt.textContent.trim().replace(/\s+/g, ' ');
+    const valueEl = dd.querySelector('.price-value') || dd;
+    const match   = valueEl.textContent.match(/\$[\d,]+/);
+    if (!match) return;
+    const value = match[0];
+    if (seen.has(value)) return;
+    const skipLabels = ['msrp', 'retail value', 'savings', 'discount', 'rebate', 'incentive'];
+    if (skipLabels.some(s => label.toLowerCase().includes(s))) return;
+    seen.add(value);
+    prices.push({ label, value, selector: null, raw: valueEl.textContent.trim() });
+  });
+
+  // Strategy 2: elements with price-related classes
+  document.querySelectorAll(
+    '[class*="price"]:not([class*="msrp"]):not([class*="retail"]),' +
+    '[class*="Price"]:not([class*="Msrp"]):not([class*="Retail"])'
+  ).forEach(el => {
+    const match = el.textContent.match(/\$[\d,]+/);
+    if (!match) return;
+    const value = match[0];
+    if (seen.has(value)) return;
+    if (parseInt(value.replace(/[$,]/g, '')) < 1000) return;
+    const parent   = el.closest('li, tr, div[class*="price"], div[class*="Price"]');
+    const labelEl  = parent?.querySelector('span, label, dt, th') || el.previousElementSibling;
+    const label    = labelEl?.textContent?.trim().replace(/\s+/g, ' ') ||
+                     el.className.replace(/[^a-zA-Z\s]/g, ' ').trim();
+    if (label.length > 50) return;
+    seen.add(value);
+    prices.push({ label: label || 'Price', value, selector: null, raw: el.textContent.trim() });
+  });
+
+  // Sort ascending (MSRP highest, advertised price lower)
+  prices.sort((a, b) =>
+    parseInt(a.value.replace(/[$,]/g, '')) - parseInt(b.value.replace(/[$,]/g, ''))
+  );
+
+  return prices.slice(0, 8);
+}
 
 /**
  * Use photo_hints to select the most likely exterior/interior photos
@@ -771,11 +929,17 @@ async function enrichSingleVehicle(vehicle) {
       console.log(`DealersOrbit: Detail page data for ${vehicle.model}:`, detailData);
 
       if (detailData) {
-        // Verify data matches expected vehicle before using it
-        const titleMatch = !detailData.title ||
-          detailData.title.toLowerCase().includes(vehicle.model?.toLowerCase().split(' ')[0]) ||
-          detailData.title.toLowerCase().includes(vehicle.make?.toLowerCase()) ||
-          detailData.title.toLowerCase().includes(vehicle.year);
+        // VIN is a definitive match — trust detail data if VINs agree
+        const vinFromUrl = vehicle.listing_url?.match(/\b([A-HJ-NPR-Z0-9]{17})\b/i)?.[1]?.toUpperCase();
+        const vinMatch = detailData.vin && (
+          detailData.vin.toUpperCase() === (vehicle.vin || '').toUpperCase() ||
+          detailData.vin.toUpperCase() === (vinFromUrl || '')
+        );
+
+        const titleMatch = vinMatch || !detailData.title ||
+          detailData.title.toLowerCase().includes((vehicle.model || '').toLowerCase().split(' ')[0]) ||
+          detailData.title.toLowerCase().includes((vehicle.make || '').toLowerCase()) ||
+          (vehicle.year && detailData.title.includes(vehicle.year));
 
         if (!titleMatch) {
           console.warn(`DealersOrbit: Title mismatch! Expected ${vehicle.model}, got ${detailData.title}. Skipping detail data.`);
@@ -785,11 +949,19 @@ async function enrichSingleVehicle(vehicle) {
           vehicle.mileage = detailData.mileage || vehicle.mileage;
 
           if (detailData.photos?.length > (vehicle.photos?.length || 0)) {
-            vehicle.photos = detailData.photos;
-            console.log(`DealersOrbit: Got ${detailData.photos.length} full photos`);
+            vehicle.photos = filterJunkPhotos(detailData.photos);
+            console.log(`DealersOrbit: Got ${vehicle.photos.length} full photos`);
           }
 
-          if (!vehicle.trim && detailData.title) {
+          // When VIN matched but card gave garbage year/make/model, parse from detail title
+          if (vinMatch && detailData.title) {
+            const parsed = parseYearMakeModelFromTitle(detailData.title);
+            if (!vehicle.year  || !vehicle.year.match(/^\d{4}$/))  vehicle.year  = parsed.year;
+            if (!vehicle.make  || vehicle.make.length < 2)          vehicle.make  = parsed.make;
+            if (!vehicle.model || isGenericCardText(vehicle.model)) vehicle.model = parsed.model;
+          }
+
+          if ((!vehicle.trim || isGenericCardText(vehicle.trim)) && detailData.title) {
             vehicle.trim = parseTrimFromTitle(
               detailData.title, vehicle.year, vehicle.make, vehicle.model
             );
@@ -797,7 +969,6 @@ async function enrichSingleVehicle(vehicle) {
 
           vehicle.exterior_color = detailData.exterior_color || null;
           vehicle.interior_color = detailData.interior_color || null;
-          // JBA body style is more specific than NHTSA — prefer it
           vehicle.body_style = detailData.body_style || vehicle.body_style || null;
           console.log(`DealersOrbit: Colors — exterior: ${vehicle.exterior_color}, interior: ${vehicle.interior_color}`);
           console.log(`DealersOrbit: Body style — ${vehicle.body_style}`);
@@ -818,8 +989,31 @@ async function enrichSingleVehicle(vehicle) {
         vehicle.mileage = 'New';
       }
 
+      // Fallback extraction — runs when config selectors returned nulls
+      if (tab && (!vehicle.price || !vehicle.mileage || !vehicle.exterior_color)) {
+        try {
+          const { onboarding_pending_config } = await chrome.storage.local.get('onboarding_pending_config');
+          const priceLabel = onboarding_pending_config?.price_label || null;
+          const fallbackResults = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func:   extractDetailPageFallback,
+            args:   [priceLabel],
+          });
+          const fb = fallbackResults?.[0]?.result || {};
+          if (!vehicle.price           && fb.price)          vehicle.price          = fb.price;
+          if (!vehicle.mileage         && fb.mileage)        vehicle.mileage        = fb.mileage;
+          if (!vehicle.exterior_color  && fb.exterior_color) vehicle.exterior_color = fb.exterior_color;
+          if (!vehicle.interior_color  && fb.interior_color) vehicle.interior_color = fb.interior_color;
+          if (!vehicle.body_style      && fb.body_style)     vehicle.body_style     = fb.body_style;
+          if (fb.price) console.log('DealersOrbit: Fallback price:', fb.price);
+        } catch (_) {}
+      }
+
+      // Filter junk from card photos too (logos/widgets that slipped past content script)
+      vehicle.photos = filterJunkPhotos(vehicle.photos || []);
+
       // Apply photo hints — already resolved above, no second fetch needed
-      vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], photoHintsFromConfig);
+      vehicle.photos_for_video = applyPhotoHints(vehicle.photos, photoHintsFromConfig);
       console.log(`DealersOrbit: Selected ${vehicle.photos_for_video.length} photos using hints`);
 
     } catch (err) {
@@ -1198,13 +1392,223 @@ async function markListingPosted(vehicle, listingUrl) {
   }
 }
 
+// Standalone — serialized and injected into detail page tab via executeScript
+function extractDetailPageFallback(confirmedPriceLabel) {
+  const getAll = (sel) => { try { return Array.from(document.querySelectorAll(sel)); } catch (_) { return []; } };
+
+  // ── Price ──────────────────────────────────────────────────
+  let price = null;
+
+  // 1. Use confirmed label from onboarding (most accurate)
+  if (confirmedPriceLabel) {
+    const labelLower = confirmedPriceLabel.toLowerCase();
+    getAll('[class*="price-label"],[class*="label"],[class*="Label"],dt,th,span,strong').forEach(el => {
+      if (price) return;
+      if (el.textContent?.trim().toLowerCase().includes(labelLower)) {
+        const container = el.closest('[class*="price-block"],[class*="pricing-item"],[class*="price-row"],tr,dd');
+        const priceEl   = container?.querySelector('[class*="price"]:not([class*="label"]):not([class*="msrp"]),td:last-child') || el.nextElementSibling;
+        const m = priceEl?.textContent?.match(/\$[\d,]+/);
+        if (m && parseInt(m[0].replace(/[$,]/g,'')) > 1000) price = m[0];
+      }
+    });
+  }
+
+  // 2. Known price keywords in label elements
+  if (!price) {
+    const priceKeywords = ['internet price','online price','our price','sale price',
+                           'final price','dealer price','advertised price'];
+    getAll('dt,[class*="price-label"],[data-testid*="price-label"],span.label').forEach(el => {
+      if (price) return;
+      const t = el.textContent?.trim().toLowerCase() || '';
+      if (!priceKeywords.some(k => t.includes(k))) return;
+      const dd = el.nextElementSibling || el.closest('[class*="price-block"],[class*="pricing"]')
+                   ?.querySelector('[class*="price"]:not([class*="label"])');
+      const m = dd?.textContent?.match(/\$[\d,]+/);
+      if (m && parseInt(m[0].replace(/[$,]/g,'')) > 1000) price = m[0];
+    });
+  }
+
+  // 3. Collect all significant dollar amounts, take the median (avoids MSRP high/fees low)
+  if (!price) {
+    const amounts = [];
+    getAll('[class*="price"],[class*="Price"]').forEach(el => {
+      if (el.children.length > 3) return; // skip containers
+      const m = el.textContent?.match(/\$[\d,]+/);
+      if (m) { const v = parseInt(m[0].replace(/[$,]/g,'')); if (v > 1000 && v < 300000) amounts.push(v); }
+    });
+    if (amounts.length) {
+      amounts.sort((a,b) => a-b);
+      price = '$' + amounts[Math.floor(amounts.length / 2)].toLocaleString();
+    }
+  }
+
+  // ── Mileage ────────────────────────────────────────────────
+  let mileage = null;
+  // Spec containers: dl.dl-horizontal, .basic-info, table, [class*="spec"]
+  const specContainers = [
+    ...getAll('dl.dl-horizontal dt, dl dt'),
+    ...getAll('[class*="spec"] dt, [class*="spec"] th, [class*="detail"] dt'),
+    ...getAll('table.vehicle-specs th, table th'),
+    ...getAll('[data-testid*="mileage"]'),
+  ];
+  specContainers.forEach(el => {
+    if (mileage) return;
+    const t = el.textContent?.trim().toLowerCase() || '';
+    if (!['mileage','miles','odometer'].some(k => t.includes(k))) return;
+    const val = (el.nextElementSibling || el.closest('tr')?.querySelector('td'))?.textContent?.trim() || '';
+    const m = val.match(/([\d,]+)/);
+    if (m && parseInt(m[1].replace(/,/g,'')) > 100) mileage = parseInt(m[1].replace(/,/g,'')).toLocaleString() + ' mi';
+  });
+  // Inline elements with "miles" in text
+  if (!mileage) {
+    getAll('[class*="mileage"],[class*="Mileage"],[data-testid*="mileage"]').forEach(el => {
+      if (mileage) return;
+      const m = el.textContent?.match(/([\d,]+)\s*(mi|miles)/i);
+      if (m) mileage = parseInt(m[1].replace(/,/g,'')).toLocaleString() + ' mi';
+    });
+  }
+
+  // ── Colors — only look in known spec containers ────────────
+  let exterior_color = null, interior_color = null;
+  const specLabelEls = [
+    ...getAll('dl.dl-horizontal dt, dl dt'),
+    ...getAll('[class*="spec"] dt, [class*="spec-label"], [class*="detail"] dt'),
+    ...getAll('table th, [class*="label"]'),
+  ];
+  specLabelEls.forEach(el => {
+    const t = el.textContent?.trim().toLowerCase().replace(/[:\s]+$/,'') || '';
+    const valEl = el.nextElementSibling || el.closest('tr')?.querySelector('td:last-child');
+    const val   = valEl?.textContent?.trim();
+    if (!val || val.length > 35 || val.includes('\n')) return;
+    if (!exterior_color && ['exterior color','exterior','ext color','ext. color'].some(k => t === k))
+      exterior_color = val;
+    if (!interior_color && ['interior color','interior','int color','int. color'].some(k => t === k))
+      interior_color = val;
+  });
+
+  // Mileage: JSON-LD structured data (most reliable — always present, pre-rendered)
+  if (!mileage) {
+    document.querySelectorAll('script[type="application/ld+json"]').forEach(el => {
+      if (mileage) return;
+      try {
+        const data = JSON.parse(el.textContent || '{}');
+        const items = Array.isArray(data) ? data : [data];
+        items.forEach(item => {
+          if (mileage) return;
+          const raw = item.mileageFromOdometer?.value ?? item.mileageFromOdometer ?? item.odometer;
+          if (raw != null) {
+            const v = parseInt(String(raw).replace(/,/g,''));
+            if (v > 100 && v < 500000) mileage = v.toLocaleString() + ' mi';
+          }
+        });
+      } catch (_) {}
+    });
+  }
+
+  // Mileage: label+number pattern in body text ("Mileage: 112,000" without trailing unit)
+  if (!mileage) {
+    const bodyText = document.body?.innerText || '';
+    const m1 = bodyText.match(/(?:mileage|odometer)[:\s]+\s*([\d,]{4,9})/i);
+    const m2 = bodyText.match(/\b([\d,]{4,9})\s*(?:miles|mi)\b/i);
+    const raw = m1?.[1] || m2?.[1];
+    if (raw) {
+      const v = parseInt(raw.replace(/,/g,''));
+      if (v > 100 && v < 500000) mileage = v.toLocaleString() + ' mi';
+    }
+  }
+
+  return { price, mileage, exterior_color, interior_color, body_style: null };
+}
+
+const JUNK_PHOTO_PATTERNS = [
+  'playbutton', 'tradepending', 'sticker-grey', 'autocheck', 'calendar',
+  'gravityforms', 'autoipacket', 'logo', 'icon', 'badge', 'placeholder',
+  'pixel', 'tracking', '1x1', 'spacer', '.gif', 'data:image',
+];
+
+function filterJunkPhotos(urls) {
+  return (urls || []).filter(url => {
+    if (!url || !url.startsWith('http')) return false;
+    const lower = url.toLowerCase();
+    return !JUNK_PHOTO_PATTERNS.some(p => lower.includes(p));
+  });
+}
+
+function normalizeBodyStyle(raw) {
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes('suv') || lower.includes('sport utility') || lower.includes('crossover')) return 'SUV';
+  if (lower.includes('pickup') || lower.includes('truck')) return 'Truck';
+  if (lower.includes('minivan') || lower.includes('van')) return 'Van';
+  if (lower.includes('convertible') || lower.includes('cabriolet')) return 'Convertible';
+  if (lower.includes('coupe')) return 'Coupe';
+  if (lower.includes('hatchback')) return 'Hatchback';
+  if (lower.includes('wagon') || lower.includes('estate')) return 'Wagon';
+  if (lower.includes('sedan')) return 'Sedan';
+  return raw;
+}
+
+function applyNhtsaToVehicle(vehicle, vehicleDataStr) {
+  if (!vehicle || !vehicleDataStr) return;
+  let vd;
+  try { vd = JSON.parse(vehicleDataStr); } catch (_) { return; }
+  if (!vd || typeof vd !== 'object') return;
+
+  if (!vehicle.year  && vd.year)  vehicle.year  = vd.year;
+  if (!vehicle.make  && vd.make)  vehicle.make  = vd.make;
+  if (!vehicle.model && vd.model) vehicle.model = vd.model;
+  if ((!vehicle.trim || isGenericCardText(vehicle.trim)) && vd.trim) vehicle.trim = vd.trim;
+  if (!vehicle.body_style && vd.body_style) vehicle.body_style = normalizeBodyStyle(vd.body_style);
+  if (vd.drivetrain) vehicle.drivetrain = vd.drivetrain;
+  if (vd.fuel_type)  vehicle.fuel_type  = vd.fuel_type;
+  if (vd.engine)     vehicle.engine     = vd.engine;
+}
+
+function parseYearMakeModelFromTitle(title) {
+  if (!title) return {};
+  const yearMatch = title.match(/\b(19|20)\d{2}\b/);
+  const year = yearMatch?.[0] || null;
+  const rest = title
+    .replace(/\b(19|20)\d{2}\b/, '')
+    .replace(/\b(pre-?owned|used|new|certified|cpo)\b/gi, '')
+    .trim();
+  const parts = rest.split(/\s+/).filter(Boolean);
+  // model = one word (e.g. "F-150"), rest becomes trim ("XLT")
+  return {
+    year,
+    make:  parts[0] || null,
+    model: parts[1] || null,
+  };
+}
+
+// Returns true for generic UI / widget text that a bad card selector might scrape
+function isGenericCardText(text) {
+  if (!text) return true;
+  // Any "Label: value" or "Label: number" pattern is widget text, not a real field value
+  if (/:\s*\d/.test(text) || /:\s*\w+/.test(text) && text.length > 20) return true;
+  const generic = [
+    'compare', 'pre-owned', 'value your trade', 'get quote',
+    'view details', 'learn more', 'contact', 'schedule',
+    'vehicles in market', 'percent of', 'recently sold', 'market analysis',
+    'trade-in', 'trade in', 'financing', 'calculate payment',
+    'total merits', 'merits', 'market days',
+  ];
+  return generic.some(g => text.toLowerCase().includes(g));
+}
+
 function parseTrimFromTitle(title, year, make, model) {
   if (!title) return null;
   let trim = title;
-  if (year) trim = trim.replace(year, '');
-  if (make) trim = trim.replace(new RegExp(make, 'gi'), '');
-  if (model) trim = trim.replace(new RegExp(model, 'gi'), '');
-  return trim.trim().replace(/\s+/g, ' ') || null;
+  if (year)  trim = trim.replace(year, '');
+  if (make)  trim = trim.replace(new RegExp(make, 'gi'), '');
+  if (model) trim = trim.replace(new RegExp(model.replace(/[-/]/g,'\\$&'), 'gi'), '');
+  // Strip common prefixes and non-trim words
+  trim = trim.replace(/\b(pre-?owned|pre owned|used|new|certified|cpo|vehicle)\b/gi, '');
+  trim = trim.trim().replace(/\s+/g, ' ');
+  // Discard if only transmission/drivetrain info remains — not a meaningful trim
+  const notTrim = /^(automatic|manual|cvt|dct|awd|fwd|4wd|4x4|rwd|2wd|suv|sedan|truck|coupe|wagon)$/i;
+  if (notTrim.test(trim)) return null;
+  return trim || null;
 }
 
 
@@ -1325,6 +1729,7 @@ async function saveToListingHistory(job, apiJob, token) {
         trim: v.trim,
         price: v.price,
         mileage: v.mileage,
+        body_style: v.body_style || null,
         listing_url: v.listing_url,
         video_url: apiJob.final_video_url,
         photo_urls: JSON.stringify(v.photos_for_video || []),
@@ -1388,6 +1793,7 @@ async function resumePolling(job, queue) {
           job.status     = 'completed';
           job.progress   = 100;
           job.label      = 'Complete!';
+          applyNhtsaToVehicle(job.vehicle, pollData.vehicle_data);
           await saveQueue(queue);
           await saveToListingHistory(job, pollData, token);
           processQueue();
@@ -1511,12 +1917,8 @@ async function realProcessing(job, queue) {
       job.status = "completed";
       job.progress = 100;
       job.label = "Complete!";
+      applyNhtsaToVehicle(job.vehicle, pollData.vehicle_data);
       await saveQueue(queue);
-
-      console.log("DealersOrbit: Job completed, attempting to save to history...");
-      console.log("DealersOrbit: token available:", !!token);
-      console.log("DealersOrbit: final_video_url:", pollData.final_video_url);
-
       await saveToListingHistory(jobSnapshot, pollData, token);
       return;
     }

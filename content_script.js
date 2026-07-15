@@ -124,8 +124,12 @@ function getPageType() {
 function findCarCards() {
   // Candidate selectors — common patterns across dealership sites
   const candidateSelectors = [
-    // Cars.com — uses fuse-card web components with JSON data
+    // Cars.com search results — fuse-card web components with JSON data
     'fuse-card[data-listing-id]',
+    // Cars.com dealer inventory pages — shop_card divs
+    'div[data-qa="shop_card"]',
+    // CarGurus inventory tiles
+    'div[data-testid="srp-listing-tile"]',
     // Generic card patterns
     '[class*="vehicle-card"]',
     '[class*="car-card"]',
@@ -223,11 +227,171 @@ function findRepeatedCarElements() {
  * Scrape vehicle data from a car card element (inventory page)
  * or from the full page (single listing page).
  */
+/**
+ * Cars.com dealer inventory page scraper — reads data-override-payload attribute.
+ * Used on /dealers/{id}/{name}/inventory/ pages which use div[data-qa="shop_card"].
+ */
+function scrapeCarsDotComDealerCard(card) {
+  try {
+    const raw = card.getAttribute('data-override-payload');
+    const data = raw ? JSON.parse(raw) : {};
+
+    // Title from the heading element (already properly cased, e.g. "2025 Honda CR-V Hybrid Sport-L")
+    const titleEl = card.querySelector('[data-qa="title"]');
+    const titleText = titleEl?.textContent?.trim() || '';
+
+    const year = data.model_year?.toString() || null;
+
+    // Title-case the make (data has it lowercase: "honda" → "Honda")
+    const makeLower = data.make || '';
+    const make = makeLower.split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || null;
+
+    // Model from title text (more accurate than the URL-slug in data)
+    // "2025 Honda CR-V Hybrid Sport-L" → strip year + make → "CR-V Hybrid Sport-L"
+    let model = null;
+    if (titleText && year && make) {
+      model = titleText
+        .replace(year, '')
+        .replace(new RegExp(make.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '')
+        .trim() || null;
+    }
+
+    // Listing URL
+    const linkEl = card.querySelector('a.shop-card-link, a[href*="/vehicledetail/"]');
+    const href = linkEl?.getAttribute('href') || '';
+    const listingUrl = href
+      ? (href.startsWith('http') ? href : 'https://www.cars.com' + href)
+      : window.location.href;
+
+    // Price from DOM first, fall back to data attribute
+    const priceEl = card.querySelector('[data-qa="primary-price"]');
+    const priceMatch = priceEl?.textContent?.match(/\$[\d,]+/);
+    const priceNum = parseInt(data.price || '0');
+    const price = priceMatch ? priceMatch[0]
+      : (priceNum > 0 ? '$' + priceNum.toLocaleString() : null);
+
+    // Mileage
+    let mileage = null;
+    if ((data.stock_type || '').toLowerCase() === 'new') {
+      mileage = 'New';
+    } else {
+      const mileageEl = card.querySelector('[data-qa="mileage"]');
+      const mileageMatch = mileageEl?.textContent?.match(/([\d,]+)/);
+      if (mileageMatch) mileage = mileageMatch[0] + ' mi';
+    }
+
+    // Single thumbnail photo, upgrade to xxlarge
+    const imgEl = card.querySelector('img.vehicle-image, [data-qa="vehicle_image"] img');
+    const imgSrc = (imgEl?.src || '').replace('/large/', '/xxlarge/').replace(/\?.*$/, '');
+    const photos = imgSrc && imgSrc.startsWith('http') ? [imgSrc] : [];
+
+    return {
+      vin:         null,  // not on card, will be populated from VDP scrape
+      year,
+      make,
+      model,
+      trim:        null,
+      title:       titleText || [year, make, model].filter(Boolean).join(' '),
+      price,
+      mileage,
+      photos,
+      listing_url: listingUrl,
+      source_url:  window.location.href,
+      scraped_at:  new Date().toISOString(),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * CarGurus inventory card scraper.
+ * The hidden <dl> inside each card contains ALL vehicle data (VIN, colors, mileage, etc.)
+ * in structured dt/dd pairs — no JSON attribute needed.
+ */
+function scrapeCarGurus(card) {
+  try {
+    // Parse the hidden dl — every field is a dt label + dd value
+    const dl = card.querySelector('dl');
+    const specs = {};
+    if (dl) {
+      Array.from(dl.querySelectorAll('dt')).forEach(dt => {
+        const label = dt.textContent.replace(':', '').trim().toLowerCase();
+        const dd = dt.nextElementSibling;
+        if (dd) specs[label] = dd.textContent.trim();
+      });
+    }
+
+    // Listing URL — full path to VDP
+    const link = card.querySelector('a[data-testid="tile-link"]');
+    const href = link?.getAttribute('href') || '';
+    const listingUrl = href.startsWith('http') ? href : 'https://www.cargurus.com' + href;
+
+    // Price from the visible price element
+    const priceEl = card.querySelector('[data-testid="srp-tile-price"]');
+    const priceMatch = priceEl?.textContent?.match(/\$[\d,]+/);
+    const price = priceMatch ? priceMatch[0] : null;
+
+    // Mileage — specs have it without " mi" suffix
+    const mileageRaw = specs['mileage'];
+    const mileage = mileageRaw ? mileageRaw.replace(/[^\d,]/g, '').trim()
+      ? mileageRaw.replace(/[^\d,]/g, '').trim() + ' mi'
+      : null : null;
+
+    // Photo — strip query params from the listing thumbnail (already 1024×768)
+    const imgEl = card.querySelector('img[data-testid="srp-listing-tile-image"]');
+    const imgSrc = (imgEl?.src || imgEl?.getAttribute('src') || '').split('?')[0];
+    const photos = imgSrc && imgSrc.startsWith('http') ? [imgSrc] : [];
+
+    const year  = specs['year']  || null;
+    const make  = specs['make']  || null;
+    const model = specs['model'] || null;
+    const vin   = specs['vin']   || null;
+
+    // Trim from the visible subtitle (specs have a long trim+body+drivetrain string)
+    const trimEl = card.querySelector('[data-cg-ft="vehicle"]');
+    const trim = trimEl?.textContent?.trim() || null;
+
+    return {
+      vin,
+      year,
+      make,
+      model,
+      trim,
+      title:          [year, make, model].filter(Boolean).join(' '),
+      price,
+      mileage,
+      exterior_color: specs['exterior color'] || null,
+      interior_color: specs['interior color'] || null,
+      body_style:     specs['body type']      || null,
+      photos,
+      listing_url:    listingUrl,
+      source_url:     window.location.href,
+      scraped_at:     new Date().toISOString(),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 function scrapeVehicleFromCard(card) {
-  // Cars.com — use structured JSON data
+  // Cars.com search results — fuse-card with data-vehicle-details JSON
   if (card.tagName.toLowerCase() === 'fuse-card') {
     const carsData = scrapeCarsDotCom(card);
     if (carsData) return carsData;
+  }
+
+  // Cars.com dealer inventory — div[data-qa="shop_card"] with data-override-payload
+  if (card.getAttribute('data-qa') === 'shop_card') {
+    const dealerData = scrapeCarsDotComDealerCard(card);
+    if (dealerData) return dealerData;
+  }
+
+  // CarGurus inventory tile — div[data-testid="srp-listing-tile"]
+  if (card.getAttribute('data-testid') === 'srp-listing-tile') {
+    const cgData = scrapeCarGurus(card);
+    if (cgData) return cgData;
   }
 
   // Generic scraper for all other sites
@@ -257,25 +421,61 @@ function scrapeCarsDotCom(card) {
 
     const data = JSON.parse(raw);
 
-    // Extract listing URL from the parent LI
-    const li = card.closest('li');
-    const link = li?.querySelector('a[href*="/vehicledetail/"]');
-    const href = link?.getAttribute('href') || '';
-    const listingUrl = href.startsWith('http') ?
-      href :
-      'https://www.cars.com' + href;
+    // Listing URL from card-gallery data-card-href, then a[data-card-link], then listingId
+    const galleryEl = card.querySelector('card-gallery');
+    const cardHref = galleryEl?.getAttribute('data-card-href') ||
+                     card.querySelector('a[data-card-link]')?.getAttribute('href') ||
+                     (data.listingId ? `/vehicledetail/${data.listingId}/` : null);
+    const listingUrl = cardHref
+      ? (cardHref.startsWith('http') ? cardHref : 'https://www.cars.com' + cardHref)
+      : window.location.href;
+
+    // Dealer name — first .fuse-body-small with text-weaker CSS variable
+    const dealerNameEl = Array.from(card.querySelectorAll('.fuse-body-small'))
+      .find(el => (el.getAttribute('style') || '').includes('text-weaker'));
+    const dealerName = dealerNameEl?.textContent?.trim() || null;
+
+    // Price — data.price is a raw number string e.g. "56233"; parseInt formats correctly
+    const priceNum = parseInt(data.price || '0');
+    const price = priceNum > 0 ? '$' + priceNum.toLocaleString() : null;
+
+    // Mileage — new cars have stockType "New"
+    let mileage = null;
+    if (data.stockType === 'New') {
+      mileage = 'New';
+    } else if (data.mileage) {
+      const mi = parseInt(data.mileage);
+      mileage = mi > 0 ? mi.toLocaleString() + ' mi' : null;
+    }
+
+    // Photos from card-gallery light DOM, upgrade /large/ → /xxlarge/ for better resolution
+    const photos = [...new Set(
+      Array.from(card.querySelectorAll('card-gallery img'))
+        .map(img => (img.src || '').replace('/large/', '/xxlarge/').replace(/\?.*$/, ''))
+        .filter(src => src && src.startsWith('http'))
+    )].slice(0, 8);
+
+    const year  = data.year?.toString() || null;
+    const make  = data.make || null;
+    const model = data.model || null;
+    const trim  = data.trim || null;
+
     return {
-      vin: data.vin || null,
-      year: data.year?.toString() || null,
-      make: data.make || null,
-      model: data.model || null,
-      trim: data.trim || null,
-      price: data.price ? '$' + data.price.toLocaleString() : null,
-      mileage: data.mileage ? data.mileage.toLocaleString() + ' mi' : null,
-      photos: extractPhotosFromCard(card),
-      listing_url: listingUrl,
-      source_url: window.location.href,
-      scraped_at: new Date().toISOString(),
+      vin:            data.vin || null,
+      year,
+      make,
+      model,
+      trim,
+      title:          [year, make, model, trim].filter(Boolean).join(' '),
+      price,
+      mileage,
+      exterior_color: data.exteriorColor || null,
+      body_style:     data.bodyStyle || null,
+      dealer_name:    dealerName,
+      photos,
+      listing_url:    listingUrl,
+      source_url:     window.location.href,
+      scraped_at:     new Date().toISOString(),
     };
   } catch (e) {
     return null;
@@ -375,7 +575,10 @@ const VDP_URL_PATTERNS = [
 ];
 
 function isVdpPage() {
+  const hostname = window.location.hostname;
   const path = window.location.pathname.toLowerCase();
+  // Cars.com VDP — UUID-based URL, not VIN
+  if (hostname === 'www.cars.com' && path.includes('/vehicledetail/')) return true;
   // VIN in URL is the strongest signal
   if (VIN_REGEX.test(path)) return true;
   // Known VDP path patterns
@@ -951,6 +1154,43 @@ async function addCaptionToPost(caption) {
   console.log("DealersOrbit: caption inserted");
 }
 
+/**
+ * Fetch a photo and return it as a File object.
+ * Tries a direct fetch first (works for CDNs that send permissive CORS headers).
+ * If that fails — CORS block, 403 hotlink protection, or any network error —
+ * falls back silently to the background service worker, which runs in the
+ * extension context and is not subject to CORS restrictions.
+ */
+async function fetchPhotoFile(url, filename) {
+  try {
+    const resp = await fetch(url);
+    if (resp.ok) {
+      const blob = await resp.blob();
+      return new File([blob], filename, { type: blob.type || 'image/jpeg' });
+    }
+  } catch (_) {}
+
+  // Direct fetch failed — proxy through background (bypasses CORS/hotlink).
+  // Background returns base64 string because Chrome message passing uses JSON
+  // and cannot transfer ArrayBuffers directly.
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      { type: 'FETCH_FILES', files: [{ url, isVideo: false }] },
+      (resp) => {
+        const result = resp?.results?.[0];
+        if (!result?.ok || !result.base64) { resolve(null); return; }
+        try {
+          const binary = atob(result.base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: result.contentType || 'image/jpeg' });
+          resolve(new File([blob], filename, { type: blob.type }));
+        } catch (_) { resolve(null); }
+      }
+    );
+  });
+}
+
 async function uploadFilesToPost(photos, videoUrl) {
   const photoUrls = photos || [];
 
@@ -972,18 +1212,9 @@ async function uploadFilesToPost(photos, videoUrl) {
     // ── Two-pass: video first, then photos once Facebook finishes processing ──
 
     // Start downloading photos in the background while we deal with video
-    const photoDownloadPromise = Promise.all(photoUrls.map(async (url, i) => {
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) return null;
-        const blob = await resp.blob();
-        const ext = url.split('?')[0].split('.').pop().toLowerCase() || 'jpg';
-        return new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' });
-      } catch (e) {
-        console.warn(`DealersOrbit: photo ${i + 1} error:`, e.message);
-        return null;
-      }
-    }));
+    const photoDownloadPromise = Promise.all(
+      photoUrls.map((url, i) => fetchPhotoFile(url, `photo-${i + 1}.jpg`))
+    );
 
     // Pass 1: inject video only → opens the composer
     console.log('DealersOrbit: Downloading video...');
@@ -1074,15 +1305,8 @@ async function uploadFilesToPost(photos, videoUrl) {
     }
 
     for (let i = 0; i < photoUrls.length; i++) {
-      try {
-        const resp = await fetch(photoUrls[i]);
-        if (!resp.ok) continue;
-        const blob = await resp.blob();
-        const ext = photoUrls[i].split('?')[0].split('.').pop().toLowerCase() || 'jpg';
-        allFiles.push(new File([blob], `photo-${i + 1}.${ext}`, { type: blob.type || 'image/jpeg' }));
-      } catch (e) {
-        console.warn(`DealersOrbit: photo ${i + 1} error:`, e.message);
-      }
+      const file = await fetchPhotoFile(photoUrls[i], `photo-${i + 1}.jpg`);
+      if (file) allFiles.push(file);
     }
 
     if (allFiles.length > 0) {
@@ -1666,17 +1890,10 @@ async function uploadPhotosToFacebook(fbListing) {
     // Download photos and convert to File objects
     const files = [];
     for (const url of photoUrls.slice(0, 20)) {
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) continue;
-        const blob = await resp.blob();
-        const filename = url.split('/').pop() || 'photo.jpg';
-        const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
-        files.push(file);
-        await sleep(100);
-      } catch (e) {
-        console.log(`DealersOrbit: Failed to download photo: ${url}`);
-      }
+      const filename = url.split('/').pop().split('?')[0] || 'photo.jpg';
+      const file = await fetchPhotoFile(url, filename);
+      if (file) files.push(file);
+      await sleep(100);
     }
 
     if (!files.length) return;
@@ -2048,20 +2265,144 @@ async function init() {
   }
 
   if (config.type === "cars_com") {
-    // Use Cars.com specific parser
     if (!isVehiclePage()) return;
+
+    // Cars.com VDPs always use /vehicledetail/ — use a direct check instead of the
+    // generic isVdpPage() which falsely matches /shopping/new/, /shopping/certified-preowned/,
+    // and /dealers/.../inventory/ via VDP_URL_PATTERNS (/new/, /certified/, /inventory/).
+    if (window.location.pathname.toLowerCase().includes('/vehicledetail/')) {
+      if (document.querySelector(`.${BUTTON_CLASS}`)) return;
+
+      // Get all photos from thumbnail grid (all vehicle photos, not just 6 preview cards)
+      const thumbImgs = Array.from(document.querySelectorAll('[part="thumbnail-grid"] button img'));
+      const allPhotos = [...new Set(
+        thumbImgs
+          .map(img => (img.src || '').replace(/\?.*$/, ''))
+          .filter(src => src && src.startsWith('http'))
+      )];
+
+      // Get structured vehicle data — try fuse-card data attribute, then generic page scrape
+      const fuseCard = document.querySelector('fuse-card[data-vehicle-details]') ||
+                       document.querySelector('fuse-card[data-listing-id]');
+      let vehicleData = fuseCard ? scrapeCarsDotCom(fuseCard) : null;
+      if (!vehicleData) vehicleData = scrapeVehicleFromPage();
+      if (!vehicleData) return;
+
+      // Thumbnail grid is authoritative for Cars.com — always prefer it over
+      // scrapeVehicleFromPage which grabs every img including editorial junk
+      if (allPhotos.length > 0) {
+        vehicleData.photos = allPhotos.slice(0, 40);
+      }
+      vehicleData.listing_url = window.location.href;
+      vehicleData.vdp_import  = true;
+
+      const fixedBtn = createImportButton(vehicleData);
+      fixedBtn.style.cssText += 'position:fixed;bottom:20px;right:20px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
+      document.body.appendChild(fixedBtn);
+
+      // Also inject inline button near the listed price
+      const priceAnchor = document.querySelector('h2.list-price') ||
+                          document.querySelector('.price-location-stack__primary');
+      if (priceAnchor) {
+        const inlineBtn = createImportButton(vehicleData);
+        inlineBtn.style.cssText += 'display:block;margin-top:12px;margin-bottom:8px;';
+        priceAnchor.insertAdjacentElement('afterend', inlineBtn);
+      }
+      return;
+    }
+
     const pageType = getPageType();
     if (pageType === "inventory") {
+      // Optionally filter to only show buttons for the user's dealership
+      const injectCarsDotCom = (cards) => {
+        let filtered = cards;
+        if (config._filter_dealer_name) {
+          const filterLower = config._filter_dealer_name.toLowerCase();
+          filtered = cards.filter(card => {
+            const dealerEl = Array.from(card.querySelectorAll('.fuse-body-small'))
+              .find(el => (el.getAttribute('style') || '').includes('text-weaker'));
+            const cardDealer = dealerEl?.textContent?.trim().toLowerCase() || '';
+            // No dealer label on this card type (e.g. dealer-specific page) — show button
+            if (!cardDealer) return true;
+            return cardDealer.includes(filterLower) ||
+                   filterLower.includes(cardDealer.split(',')[0].trim());
+          });
+        }
+        injectInventoryButtons(filtered);
+      };
+
       const cards = findCarCards();
       if (cards.length > 0) {
-        injectInventoryButtons(cards);
-        const observer = new MutationObserver(() => {
-          injectInventoryButtons(findCarCards());
-        });
+        injectCarsDotCom(cards);
+        const observer = new MutationObserver(() => injectCarsDotCom(findCarCards()));
         observer.observe(document.body, { childList: true, subtree: true });
       }
     } else {
       injectSingleListingButton();
+    }
+    return;
+  }
+
+  if (config.type === "cargurus") {
+    if (!isVehiclePage()) return;
+
+    // CarGurus VDPs use /details/{numericId}
+    if (window.location.hostname === 'www.cargurus.com' &&
+        window.location.pathname.includes('/details/')) {
+      if (document.querySelector(`.${BUTTON_CLASS}`)) return;
+
+      // Collect photos from the rendered gallery
+      const cgPhotos = [];
+      const mainImg = document.querySelector('img[alt="Vehicle Full Photo"]');
+      const mainSrc = mainImg?.src?.split('?')[0];
+      if (mainSrc?.includes('cargurus.com')) cgPhotos.push(mainSrc);
+      document.querySelectorAll('button[aria-label^="View vehicle photo"] img').forEach(img => {
+        const src = img.src?.split('?')[0].replace('296x222', '1024x768');
+        if (src?.includes('cargurus.com') && !cgPhotos.includes(src)) cgPhotos.push(src);
+      });
+
+      // Build vehicle data from VDP page (already rendered)
+      const cgTitle = document.querySelector('h1[data-cg-ft="vdp-listing-title"]')?.innerText?.trim() ||
+                      document.title || '';
+      const cgPrice = document.querySelector('[class*="priceContainer"] h2')
+                             ?.textContent?.match(/\$[\d,]+/)?.[0] || null;
+      const cgVin   = (document.body.innerText.match(/\b([A-HJ-NPR-Z0-9]{17})\b/) || [])[1] || null;
+      const cgYear  = (cgTitle.match(/\b(19|20)\d{2}\b/) || [])[0] || null;
+      const cgMake  = extractMake(cgTitle);
+
+      const vehicleData = {
+        vin:         cgVin,
+        year:        cgYear,
+        make:        cgMake,
+        title:       cgTitle,
+        price:       cgPrice,
+        photos:      cgPhotos,
+        listing_url: window.location.href,
+        source_url:  window.location.href,
+        scraped_at:  new Date().toISOString(),
+        vdp_import:  true,
+      };
+
+      const fixedBtn = createImportButton(vehicleData);
+      fixedBtn.style.cssText += 'position:fixed;bottom:20px;right:20px;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
+      document.body.appendChild(fixedBtn);
+
+      const priceAnchor = document.querySelector('[class*="priceContainer"]') ||
+                          document.querySelector('h2');
+      if (priceAnchor) {
+        const inlineBtn = createImportButton(vehicleData);
+        inlineBtn.style.cssText += 'display:block;margin-top:12px;margin-bottom:8px;';
+        priceAnchor.insertAdjacentElement('afterend', inlineBtn);
+      }
+      return;
+    }
+
+    // Inventory pages (/search, /Cars/, /Cars/m-)
+    const cards = findCarCards();
+    if (cards.length > 0) {
+      injectInventoryButtons(cards);
+      const observer = new MutationObserver(() => injectInventoryButtons(findCarCards()));
+      observer.observe(document.body, { childList: true, subtree: true });
     }
     return;
   }

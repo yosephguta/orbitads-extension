@@ -285,6 +285,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
 
+      // Cars.com — bypass domain restriction; show buttons on ALL listings.
+      if (domain.includes("cars.com")) {
+        sendResponse({
+          config: { type: "cars_com", name: "Cars.com", _filter_dealer_name: null },
+          source: "hardcoded",
+        });
+        return;
+      }
+
+      // CarGurus — universal import source, no dealer filtering.
+      if (domain.includes("cargurus.com")) {
+        sendResponse({
+          config: { type: "cargurus", name: "CarGurus", _filter_dealer_name: null },
+          source: "hardcoded",
+        });
+        return;
+      }
+
       // Domain restriction — only serve config for user's registered dealership
       const ADMIN_EMAILS = ['yoseph@jbakia.com', 'yosephfl@gmail.com'];
       const { user } = await chrome.storage.local.get('user');
@@ -514,7 +532,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const buffer = await resp.arrayBuffer();
           const contentType = resp.headers.get("content-type") ||
             (isVideo ? "video/mp4" : "image/jpeg");
-          results.push({ url, ok: true, buffer, contentType, isVideo });
+          // Chrome extension message passing uses JSON serialization — ArrayBuffers
+          // are lost. Convert to base64 string so binary data survives the round-trip.
+          const bytes = new Uint8Array(buffer);
+          let binary = '';
+          const chunk = 8192;
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+          }
+          const base64 = btoa(binary);
+          results.push({ url, ok: true, base64, contentType, isVideo });
         } catch (e) {
           results.push({ url, ok: false, error: e.message });
         }
@@ -820,21 +847,46 @@ async function enrichSingleVehicle(vehicle) {
     if (vehicle._source_tab_id) {
       try {
         await sleep(2000); // give page time for lazy images to load
+        const isCarsComVdp  = vehicle.listing_url?.includes('cars.com/vehicledetail/');
+        const isCarGurusVdp = vehicle.listing_url?.includes('cargurus.com/details/');
         const results = await chrome.scripting.executeScript({
           target: { tabId: vehicle._source_tab_id },
-          func:   extractDetailPageData,
-          args:   [detailPageSelectors],
+          func:   isCarsComVdp  ? extractCarsDotComVdpData  :
+                  isCarGurusVdp ? extractCarGurusVdpData    :
+                  extractDetailPageData,
+          args:   (isCarsComVdp || isCarGurusVdp) ? [] : [detailPageSelectors],
         });
         const detailData = results?.[0]?.result;
         console.log(`DealersOrbit: VDP detail data:`, detailData);
         if (detailData && !detailData._error) {
-          vehicle.vin           = detailData.vin           || vehicle.vin;
-          vehicle.price         = detailData.price         || vehicle.price;
-          vehicle.mileage       = detailData.mileage       || vehicle.mileage;
+          vehicle.vin            = detailData.vin            || vehicle.vin;
+          vehicle.price          = detailData.price          || vehicle.price;
+          vehicle.mileage        = detailData.mileage        || vehicle.mileage;
           vehicle.exterior_color = detailData.exterior_color || null;
           vehicle.interior_color = detailData.interior_color || null;
-          vehicle.body_style    = detailData.body_style    || null;
-          if ((detailData.photos?.length || 0) > (vehicle.photos?.length || 0)) {
+          vehicle.body_style     = detailData.body_style     || null;
+          if (isCarsComVdp) {
+            // Cars.com: always use the filtered photo set — generic scan includes junk
+            if (detailData.photos?.length > 0) {
+              vehicle.photos = detailData.photos;
+              console.log(`DealersOrbit: VDP got ${detailData.photos.length} Cars.com photos`);
+            }
+            // Fix year/make/model/trim from the accurate page title
+            if (detailData.title) {
+              vehicle.title = detailData.title;
+              const parsed = parseYearMakeModelFromTitle(detailData.title);
+              if (parsed.year)  vehicle.year  = parsed.year;
+              if (parsed.make)  vehicle.make  = parsed.make;
+              if (parsed.model) vehicle.model = parsed.model;
+              vehicle.trim = parseTrimFromTitle(
+                detailData.title, parsed.year, parsed.make, parsed.model
+              ) || null;
+              // New cars on Cars.com have very low odometer — label as "New"
+              if (/^\s*new\b/i.test(detailData.title) && !detailData.mileage) {
+                vehicle.mileage = 'New';
+              }
+            }
+          } else if ((detailData.photos?.length || 0) > (vehicle.photos?.length || 0)) {
             vehicle.photos = detailData.photos;
             console.log(`DealersOrbit: VDP got ${detailData.photos.length} photos from tab`);
           }
@@ -904,6 +956,90 @@ async function enrichSingleVehicle(vehicle) {
 
   // ── Step 1: Scrape detail page ───────────────────────────
   if (vehicle.listing_url) {
+    // Cars.com VDPs: open a background tab but use an async polling extractor
+    // that waits for LiveView to finish rendering before scraping.
+    // chrome.scripting.executeScript waits for returned Promises, so the
+    // injected function can poll up to 15s for the thumbnail grid to appear.
+    if (vehicle.listing_url.includes('cars.com/vehicledetail/')) {
+      let carsTab = null;
+      try {
+        carsTab = await chrome.tabs.create({ url: vehicle.listing_url, active: false });
+        await waitForTabLoad(carsTab.id);
+        const carsResults = await chrome.scripting.executeScript({
+          target: { tabId: carsTab.id },
+          func:   extractCarsDotComVdpDataWithWait,
+          args:   [],
+        });
+        const carsData = carsResults?.[0]?.result;
+        console.log(`DealersOrbit: Cars.com VDP data:`, carsData?.photos?.length, 'photos, title:', carsData?.title);
+        if (carsData && !carsData._error) {
+          vehicle.vin     = carsData.vin     || vehicle.vin;
+          vehicle.price   = carsData.price   || vehicle.price;
+          vehicle.mileage = carsData.mileage || vehicle.mileage;
+          vehicle.exterior_color = carsData.exterior_color || vehicle.exterior_color || null;
+          vehicle.interior_color = carsData.interior_color || null;
+          if (carsData.title) {
+            vehicle.title = carsData.title;
+            const parsed = parseYearMakeModelFromTitle(carsData.title);
+            if (parsed.year)  vehicle.year  = parsed.year;
+            if (parsed.make)  vehicle.make  = parsed.make;
+            if (parsed.model) vehicle.model = parsed.model;
+            vehicle.trim = parseTrimFromTitle(carsData.title, parsed.year, parsed.make, parsed.model) || vehicle.trim || null;
+            if (/^\s*new\b/i.test(carsData.title) && !carsData.mileage) vehicle.mileage = 'New';
+          }
+          if (carsData.photos?.length > (vehicle.photos?.length || 0)) {
+            vehicle.photos = carsData.photos;
+          }
+        }
+      } catch (err) {
+        console.log('DealersOrbit: Cars.com VDP tab failed:', err.message);
+      } finally {
+        if (carsTab) try { await chrome.tabs.remove(carsTab.id); } catch (_) {}
+      }
+      vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], null);
+      console.log(`DealersOrbit: Selected ${vehicle.photos_for_video.length} photos`);
+    } else if (vehicle.listing_url.includes('cargurus.com/details/')) {
+      // CarGurus VDP: open background tab with async polling extractor
+      let cgTab = null;
+      try {
+        cgTab = await chrome.tabs.create({ url: vehicle.listing_url, active: false });
+        await waitForTabLoad(cgTab.id);
+        const cgResults = await chrome.scripting.executeScript({
+          target: { tabId: cgTab.id },
+          func:   extractCarGurusVdpDataWithWait,
+          args:   [],
+        });
+        const cgData = cgResults?.[0]?.result;
+        console.log(`DealersOrbit: CarGurus VDP data:`, cgData?.photos?.length, 'photos, title:', cgData?.title);
+        if (cgData && !cgData._error) {
+          vehicle.vin     = cgData.vin     || vehicle.vin;
+          vehicle.price   = cgData.price   || vehicle.price;
+          vehicle.mileage = cgData.mileage || vehicle.mileage;
+          vehicle.exterior_color = cgData.exterior_color || vehicle.exterior_color || null;
+          vehicle.interior_color = cgData.interior_color || null;
+          vehicle.body_style     = cgData.body_style     || vehicle.body_style || null;
+          if (cgData.trim && (!vehicle.trim || isGenericCardText(vehicle.trim))) vehicle.trim = cgData.trim;
+          if (cgData.title) {
+            vehicle.title = cgData.title;
+            const parsed = parseYearMakeModelFromTitle(cgData.title);
+            if (parsed.year)  vehicle.year  = parsed.year;
+            if (parsed.make)  vehicle.make  = parsed.make;
+            if (parsed.model) vehicle.model = parsed.model;
+          }
+          if (cgData.photos?.length > (vehicle.photos?.length || 0)) {
+            vehicle.photos = filterJunkPhotos(cgData.photos);
+          }
+        }
+      } catch (err) {
+        console.log('DealersOrbit: CarGurus VDP tab failed:', err.message);
+      } finally {
+        if (cgTab) try { await chrome.tabs.remove(cgTab.id); } catch (_) {}
+      }
+      vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], null);
+      console.log(`DealersOrbit: Selected ${vehicle.photos_for_video.length} photos`);
+
+    } else {
+
     let tab = null;
     try {
       console.log(`DealersOrbit: Opening detail page: ${vehicle.listing_url}`);
@@ -947,6 +1083,8 @@ async function enrichSingleVehicle(vehicle) {
           vehicle.vin     = detailData.vin     || vehicle.vin;
           vehicle.price   = detailData.price   || vehicle.price;
           vehicle.mileage = detailData.mileage || vehicle.mileage;
+          // Save raw title for display — popup strips "New"/"Used" prefix
+          if (detailData.title && !vehicle.title) vehicle.title = detailData.title;
 
           if (detailData.photos?.length > (vehicle.photos?.length || 0)) {
             vehicle.photos = filterJunkPhotos(detailData.photos);
@@ -1023,6 +1161,7 @@ async function enrichSingleVehicle(vehicle) {
         try { await chrome.tabs.remove(tab.id); } catch (e) { }
       }
     }
+    } // end else (generic tab path)
   }
 
   } // end else (non-VDP)
@@ -1098,9 +1237,13 @@ async function classifySingleVehicle(vehicle, queueItemId) {
   const hintPhotos = vehicle.photos_for_video || [];
   const allPhotos  = vehicle.photos || [];
 
+  // Build a 30-photo set that covers both exterior-first and exterior-last orderings:
+  // hintPhotos first (already sorted by photo hints for JBA/Dealer Inspire),
+  // then first 15 + last 15 of allPhotos to guarantee coverage of both ends.
   const photosToClassify = [...new Set([
-    ...allPhotos.slice(0, 5),
     ...hintPhotos,
+    ...allPhotos.slice(0, 15),
+    ...allPhotos.slice(-15),
   ])].slice(0, 30);
 
   if (!photosToClassify.length) return;
@@ -1158,6 +1301,254 @@ async function classifySingleVehicle(vehicle, queueItemId) {
   } catch (err) {
     console.error("DealersOrbit: classifySingleVehicle failed:", err);
   }
+}
+
+/**
+ * Injected into a CarGurus VDP tab when the user is already on the page (rendered).
+ * Async so chrome.scripting.executeScript awaits the returned Promise.
+ * Must be self-contained (no closure references).
+ */
+async function extractCarGurusVdpData() {
+  const getSpec = (attr) =>
+    document.querySelector(`[data-cg-ft="${attr}"] span:last-child`)?.textContent?.trim() || null;
+
+  const title = document.querySelector('h1[data-cg-ft="vdp-listing-title"]')?.innerText?.trim() ||
+                document.title || '';
+  const vin            = getSpec('vin');
+  const mileage        = getSpec('mileage');
+  const exterior_color = getSpec('exteriorColor');
+  const interior_color = getSpec('interiorColor');
+  const body_style     = getSpec('bodyType');
+  const trim           = getSpec('trim');
+
+  let price = null;
+  const priceEl = document.querySelector('[class*="priceContainer"] h2, [class*="price_1cy3t"] h2');
+  if (priceEl) { const m = priceEl.textContent?.match(/\$[\d,]+/); if (m) price = m[0]; }
+
+  // Photo collection — defined inline since injected functions must be self-contained
+  const seen = new Set();
+  const photos = [];
+  const mainImg = document.querySelector('img[alt="Vehicle Full Photo"]');
+  const mainSrc = mainImg?.src?.split('?')[0];
+  if (mainSrc?.includes('cargurus.com')) { seen.add(mainSrc); photos.push(mainSrc); }
+  // Script strategy
+  document.querySelectorAll('script').forEach(s => {
+    const matches = (s.textContent || '').match(
+      /https:\/\/static\.cargurus\.com\/images\/forsale\/[^"'\\]+\.jpeg/g
+    ) || [];
+    matches.forEach(u => {
+      const hr = u.replace(/\d+x\d+\.jpeg$/, '1024x768.jpeg');
+      if (!seen.has(hr)) { seen.add(hr); photos.push(hr); }
+    });
+  });
+  // Fallback: click-through if script strategy found nothing
+  if (photos.length <= 1) {
+    const addV = () => document.querySelectorAll('button[aria-label^="View vehicle photo"] img').forEach(img => {
+      const src = img.src?.split('?')[0].replace('296x222', '1024x768');
+      if (src?.includes('cargurus.com') && !seen.has(src)) { seen.add(src); photos.push(src); }
+    });
+    addV();
+    let prev = photos.length;
+    for (let i = 0; i < 8; i++) {
+      const nb = document.querySelector('button[aria-label="Next Page"]');
+      if (!nb) break;
+      nb.click();
+      await new Promise(r => setTimeout(r, 380));
+      addV();
+      if (photos.length === prev) break;
+      prev = photos.length;
+    }
+  }
+
+  return { title, vin, price, mileage, exterior_color, interior_color, body_style, trim, photos };
+}
+
+/**
+ * Injected into a CarGurus VDP background tab.
+ * Polls up to 15s for the page to finish rendering, then extracts all data.
+ * Must be self-contained.
+ */
+async function extractCarGurusVdpDataWithWait() {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const h1 = document.querySelector('h1[data-cg-ft="vdp-listing-title"]');
+    if (h1?.innerText?.trim()) break;
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  const getSpec = (attr) =>
+    document.querySelector(`[data-cg-ft="${attr}"] span:last-child`)?.textContent?.trim() || null;
+
+  const title = document.querySelector('h1[data-cg-ft="vdp-listing-title"]')?.innerText?.trim() ||
+                document.title || '';
+  const vin            = getSpec('vin');
+  const mileage        = getSpec('mileage');
+  const exterior_color = getSpec('exteriorColor');
+  const interior_color = getSpec('interiorColor');
+  const body_style     = getSpec('bodyType');
+  const trim           = getSpec('trim');
+
+  let price = null;
+  const priceEl = document.querySelector('[class*="priceContainer"] h2, [class*="price_1cy3t"] h2');
+  if (priceEl) { const m = priceEl.textContent?.match(/\$[\d,]+/); if (m) price = m[0]; }
+
+  // Photo collection — same dual-strategy as extractCarGurusVdpData (must be self-contained)
+  const seen = new Set();
+  const photos = [];
+  const mainImg = document.querySelector('img[alt="Vehicle Full Photo"]');
+  const mainSrc = mainImg?.src?.split('?')[0];
+  if (mainSrc?.includes('cargurus.com')) { seen.add(mainSrc); photos.push(mainSrc); }
+  document.querySelectorAll('script').forEach(s => {
+    const matches = (s.textContent || '').match(
+      /https:\/\/static\.cargurus\.com\/images\/forsale\/[^"'\\]+\.jpeg/g
+    ) || [];
+    matches.forEach(u => {
+      const hr = u.replace(/\d+x\d+\.jpeg$/, '1024x768.jpeg');
+      if (!seen.has(hr)) { seen.add(hr); photos.push(hr); }
+    });
+  });
+  if (photos.length <= 1) {
+    const addV = () => document.querySelectorAll('button[aria-label^="View vehicle photo"] img').forEach(img => {
+      const src = img.src?.split('?')[0].replace('296x222', '1024x768');
+      if (src?.includes('cargurus.com') && !seen.has(src)) { seen.add(src); photos.push(src); }
+    });
+    addV();
+    let prev = photos.length;
+    for (let i = 0; i < 8; i++) {
+      const nb = document.querySelector('button[aria-label="Next Page"]');
+      if (!nb) break;
+      nb.click();
+      await new Promise(r => setTimeout(r, 380));
+      addV();
+      if (photos.length === prev) break;
+      prev = photos.length;
+    }
+  }
+
+  return { title, vin, price, mileage, exterior_color, interior_color, body_style, trim, photos };
+}
+
+/**
+ * Injected into a Cars.com VDP background tab.
+ * Cars.com uses Phoenix LiveView — content renders asynchronously after the initial
+ * HTML loads. This async function polls until the thumbnail grid (or h1 with a year)
+ * appears, then extracts all vehicle data. chrome.scripting.executeScript awaits the
+ * returned Promise so the caller blocks until this resolves.
+ * Must be self-contained — no closure references.
+ */
+async function extractCarsDotComVdpDataWithWait() {
+  // Poll up to 15s for the LiveView content to render
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const thumbImgs = document.querySelectorAll('[part="thumbnail-grid"] button img');
+    const h1text = document.querySelector('h1')?.innerText?.trim() || '';
+    if (thumbImgs.length > 0 || /\b(19|20)\d{2}\b/.test(h1text)) break;
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  // ── Title ─────────────────────────────────────────────────
+  const title = document.querySelector('h1')?.innerText?.trim() || document.title || '';
+
+  // ── VIN ───────────────────────────────────────────────────
+  const vinMatch = document.body.innerText.match(/\b([A-HJ-NPR-Z0-9]{17})\b/);
+  const vin = vinMatch ? vinMatch[1].toUpperCase() : null;
+
+  // ── Price — prefer all-in total from price stack ──────────
+  let price = null;
+  const tfootAmt = document.querySelector('.price-stack-display tfoot td:last-child');
+  if (tfootAmt) { const m = tfootAmt.textContent?.match(/\$[\d,]+/); if (m) price = m[0]; }
+  if (!price) { const m = document.querySelector('h2.list-price')?.textContent?.match(/\$[\d,]+/); if (m) price = m[0]; }
+
+  // ── Mileage ───────────────────────────────────────────────
+  let mileage = null;
+  const mileageDt = Array.from(document.querySelectorAll('dl dt'))
+    .find(dt => /mileage/i.test(dt.textContent));
+  if (mileageDt) {
+    const m = mileageDt.nextElementSibling?.textContent?.match(/([\d,]+)\s*mi\b/i);
+    if (m) mileage = parseInt(m[1].replace(/,/g, '')).toLocaleString() + ' mi';
+  }
+
+  // ── Colors from basics list ───────────────────────────────
+  let exterior_color = null, interior_color = null;
+  document.querySelectorAll('li[data-qa="basics-entry"]').forEach(li => {
+    const text = li.textContent?.trim() || '';
+    const ext  = text.match(/^(.+?)\s+exterior color$/i);
+    const int_ = text.match(/^(.+?)\s+interior color$/i);
+    if (ext  && !exterior_color) exterior_color = ext[1].trim();
+    if (int_ && !interior_color) interior_color = int_[1].trim();
+  });
+
+  // ── Photos — only platform.cstatic-images.com vehicle photos ─
+  const seen = new Set();
+  const photos = [];
+  document.querySelectorAll('img').forEach(img => {
+    const src = (img.src || img.getAttribute('data-src') || '').replace(/\?.*$/, '');
+    if (!src.includes('platform.cstatic-images.com')) return;
+    if (!src.includes('/xxlarge/')) return;  // "similar vehicles" thumbnails lack /xxlarge/
+    if (src.includes('/dealer_media/')) return;
+    if (!seen.has(src)) { seen.add(src); photos.push(src); }
+  });
+
+  return { title, vin, price, mileage, exterior_color, interior_color, body_style: null, photos };
+}
+
+/**
+ * Cars.com-specific VDP extractor — injected into the detail page tab.
+ * Avoids the generic img scan and mileage-block problems on Cars.com pages.
+ * Must be self-contained (no closure references).
+ */
+function extractCarsDotComVdpData() {
+  // ── Title ─────────────────────────────────────────────────
+  const title = document.querySelector('h1')?.innerText?.trim() || document.title || '';
+
+  // ── VIN ───────────────────────────────────────────────────
+  const vinMatch = document.body.innerText.match(/\b([A-HJ-NPR-Z0-9]{17})\b/);
+  const vin = vinMatch ? vinMatch[1].toUpperCase() : null;
+
+  // ── Price — prefer all-in total from price-stack tfoot ────
+  let price = null;
+  const tfootAmt = document.querySelector('.price-stack-display tfoot td:last-child');
+  if (tfootAmt) { const m = tfootAmt.textContent?.match(/\$[\d,]+/); if (m) price = m[0]; }
+  if (!price) {
+    const lp = document.querySelector('h2.list-price');
+    const m = lp?.textContent?.match(/\$[\d,]+/);
+    if (m) price = m[0];
+  }
+
+  // ── Mileage — from the mileage dl, not the whole payment block ─
+  let mileage = null;
+  const mileageDt = Array.from(document.querySelectorAll('dl dt'))
+    .find(dt => /mileage/i.test(dt.textContent));
+  if (mileageDt) {
+    const dd = mileageDt.nextElementSibling;
+    const m = dd?.textContent?.match(/([\d,]+)\s*mi\b/i);
+    if (m) mileage = parseInt(m[1].replace(/,/g, '')).toLocaleString() + ' mi';
+  }
+
+  // ── Colors — from li[data-qa="basics-entry"] label text ───
+  let exterior_color = null;
+  let interior_color = null;
+  document.querySelectorAll('li[data-qa="basics-entry"]').forEach(li => {
+    const text = li.textContent?.trim() || '';
+    const ext = text.match(/^(.+?)\s+exterior color$/i);
+    const int_ = text.match(/^(.+?)\s+interior color$/i);
+    if (ext && !exterior_color) exterior_color = ext[1].trim();
+    if (int_ && !interior_color) interior_color = int_[1].trim();
+  });
+
+  // ── Photos — only platform.cstatic-images.com vehicle photos ─
+  // Exclude /dealer_media/ paths (dealer logos, award seals, etc.)
+  const seen = new Set();
+  const photos = [];
+  document.querySelectorAll('img').forEach(img => {
+    const src = (img.src || img.getAttribute('data-src') || '').replace(/\?.*$/, '');
+    if (!src.includes('platform.cstatic-images.com')) return;
+    if (!src.includes('/xxlarge/')) return;  // "similar vehicles" thumbnails lack /xxlarge/
+    if (src.includes('/dealer_media/')) return;
+    if (!seen.has(src)) { seen.add(src); photos.push(src); }
+  });
+
+  return { title, vin, price, mileage, exterior_color, interior_color, body_style: null, photos };
 }
 
 /**
@@ -1944,6 +2335,14 @@ const GENERIC_SOLD_INDICATORS = [
 function getSoldIndicatorsForUrl(url) {
   try {
     const domain = new URL(url).hostname;
+    if (domain.includes('cars.com')) {
+      return [
+        'listing is no longer available',
+        'vehicle is no longer available',
+        'this vehicle has been sold',
+        'listing not found',
+      ];
+    }
     const config = DEALERSHIP_CONFIGS[domain] || DEALERSHIP_CONFIGS['www.' + domain];
     return config?.sold_indicators || GENERIC_SOLD_INDICATORS;
   } catch {
@@ -1970,6 +2369,11 @@ async function checkListingUrl(url) {
     }
 
     if (resp.status === 200) {
+      // Cars.com redirects sold VDPs to search results — detect via final URL
+      if (url.includes('cars.com/vehicledetail/') && !resp.url.includes('/vehicledetail/')) {
+        return { sold: true, reason: 'cars.com: redirected away from VDP' };
+      }
+
       const text = await resp.text();
       const indicators = getSoldIndicatorsForUrl(url);
       const matched = indicators.find(i => text.includes(i));

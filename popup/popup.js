@@ -2524,8 +2524,7 @@ function showFbListingScreen(listing, vehicle) {
 
   // Populate content on next tick so the loading state is visible briefly
   setTimeout(() => {
-    const title = [vehicle.year, vehicle.make?.toUpperCase(), vehicle.model, vehicle.trim]
-      .filter(Boolean).join(" ");
+    const title = vehicleTitle(vehicle);
     fbListingTitle.textContent = title || "Vehicle Listing";
     fbListingMeta.textContent = [
       vehicle.vin ? `VIN: ${vehicle.vin}` : null,
@@ -2722,8 +2721,7 @@ async function loadRecentAds() {
 
   recentAds.innerHTML = completed.reverse().map(job => {
     const v = job.vehicle;
-    const title = [v.year, v.make?.toUpperCase(), v.model, v.trim]
-      .filter(Boolean).join(" ");
+    const title = vehicleTitle(v);
     return `
       <div class="recent-ad-card">
         <div class="recent-ad-info">
@@ -2887,10 +2885,16 @@ async function renderQueue() {
   }
 }
 
+function vehicleTitle(v) {
+  if (v.title) {
+    return v.title.replace(/^\s*(new|used|certified|pre-?owned)\s+/i, '').trim();
+  }
+  return [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ');
+}
+
 function renderUnifiedCard(card) {
   const v = card.vehicle;
-  const title = [v.year, v.make?.toUpperCase(), v.model, v.trim]
-    .filter(Boolean).join(" ");
+  const title = vehicleTitle(v);
   const meta = [v.mileage, v.vin ? `VIN: ${v.vin}` : null]
     .filter(Boolean).join(" · ");
 
@@ -3039,9 +3043,7 @@ function attachCardHandlers(allCards) {
 
 async function showGenerateModal(vehicle) {
   modalVehicle = vehicle;
-  const title = [vehicle.year, vehicle.make?.toUpperCase(), vehicle.model]
-    .filter(Boolean).join(" ");
-  modalVehicleTitle.textContent = title;
+  modalVehicleTitle.textContent = vehicleTitle(vehicle);
 
   // Reset to step 1 — note: modalQueueItemId is set by the caller before showGenerateModal
   modalSelectedOutroId = null;
@@ -3443,8 +3445,7 @@ function getFriendlyError(error) {
 
 function renderJobCard(job) {
   const v = job.vehicle;
-  const title = [v.year, v.make?.toUpperCase(), v.model, v.trim]
-    .filter(Boolean).join(" ");
+  const title = vehicleTitle(v);
   const meta = [v.mileage, v.vin ? `VIN: ${v.vin}` : null]
     .filter(Boolean).join(" · ");
 
@@ -3553,11 +3554,21 @@ function buildReviewPhotos(classified, photosAll, blockedPhotos = [], explicitOt
     });
   });
 
-  // Auto-fill additional from other to reach 20 total
-  // Only after dedup and merge so logos are already in other
-  const currentTotal = photos.exterior.length +
-    photos.interior.length +
-    photos.additional.length;
+  // Enforce 20-photo cap across exterior + interior + additional
+  // Priority: exterior (keep all) → interior (keep all) → additional (trim to fit)
+  const extCount = photos.exterior.length;
+  const intCount = photos.interior.length;
+  const remainingForAdditional = Math.max(0, 20 - extCount - intCount);
+
+  if (photos.additional.length > remainingForAdditional) {
+    // Move overflow from additional back to other
+    const overflow = photos.additional.slice(remainingForAdditional);
+    photos.additional = photos.additional.slice(0, remainingForAdditional);
+    photos.other = [...overflow, ...photos.other];
+  }
+
+  // Auto-fill additional from other when total is under 20
+  const currentTotal = extCount + intCount + photos.additional.length;
   const needed = Math.max(0, 20 - currentTotal);
 
   if (needed > 0) {
@@ -3702,9 +3713,7 @@ function showReviewScreen(pendingReview) {
   const v = pendingReview.vehicle;
   reviewVehicle = v;
 
-  const title = [v.year, v.make?.toUpperCase(), v.model, v.trim]
-    .filter(Boolean).join(" ");
-  reviewTitle.textContent = title || "Unknown Vehicle";
+  reviewTitle.textContent = vehicleTitle(v) || "Unknown Vehicle";
   reviewMeta.textContent = [
     v.vin ? `VIN: ${v.vin}` : null,
     v.price ? v.price : null,
@@ -4318,7 +4327,7 @@ async function renderFbQueueStatus() {
 
   fbQueueList.innerHTML = fb_post_queue.slice(-5).map(item => {
     const v = item.vehicle;
-    const title = [v.year, v.make?.toUpperCase(), v.model].filter(Boolean).join(" ");
+    const title = vehicleTitle(v);
     const statusClass = `fb-queue-status-${item.status}`;
     const statusText = {
       waiting: "⏳ Waiting",

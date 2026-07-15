@@ -187,13 +187,74 @@ export const DEALERSHIP_CONFIGS = {
 
 
 // ── Cars.com config (universal fallback) ──────────────────────
+//
+// Cars.com stores all vehicle data in a data-vehicle-details JSON attribute on fuse-card.
+// No per-field CSS selectors are needed — the JSON is the authoritative source.
+//
+// Inventory page: https://www.cars.com/shopping/results/?...
+//   Card selector: fuse-card[data-listing-id]
+//   Data:          card.getAttribute('data-vehicle-details') → JSON with year/make/model/trim/vin/price/mileage/bodyStyle/exteriorColor
+//   Photos:        card.querySelectorAll('card-gallery img') — 6 preview images in light DOM, /large/ size (upgrade to /xxlarge/)
+//   Listing URL:   card.querySelector('card-gallery').getAttribute('data-card-href')
+//   Dealer name:   first .fuse-body-small with style containing 'text-weaker'
+//
+// Detail page: https://www.cars.com/vehicledetail/{uuid}/
+//   Photos:        document.querySelectorAll('[part="thumbnail-grid"] button img') — all photos at /xxlarge/ size
+//   Price:         h2.list-price  (= all-in listed price, not MSRP)
+//   Vehicle data:  fuse-card[data-vehicle-details] also present on VDP
+//
+// Sold detection:
+//   Cars.com removes sold listings and redirects the URL to search results.
+//   Check: resp.url no longer contains /vehicledetail/ after following redirects.
+//
 export const CARS_COM_CONFIG = {
   name: "Cars.com",
   domains: ["cars.com", "www.cars.com"],
   type: "cars_com",
+
+  inventory: {
+    url_pattern:   "/shopping/results/",
+    vehicle_cards: "fuse-card[data-listing-id]",
+    data_attribute: "data-vehicle-details",  // JSON blob — primary data source
+    fields: {
+      year:        null,  // from data-vehicle-details.year
+      make:        null,  // from data-vehicle-details.make
+      model:       null,  // from data-vehicle-details.model
+      trim:        null,  // from data-vehicle-details.trim
+      price:       null,  // from data-vehicle-details.price (raw integer string)
+      mileage:     null,  // from data-vehicle-details.mileage
+      vin:         null,  // from data-vehicle-details.vin
+      dealer_name: ".fuse-body-small",  // first with style 'text-weaker'
+      listing_url: "card-gallery[data-card-href]",  // attribute, not href
+      image:       "card-gallery img",  // light DOM; upgrade /large/ → /xxlarge/
+    },
+    button_injection: "[slot='footer']",
+  },
+
+  detail_page: {
+    url_pattern:    "/vehicledetail/",
+    sale_price:     "h2.list-price",           // all-in listed price
+    exterior_color: null,                       // from data-vehicle-details
+    interior_color: null,                       // not available on Cards.com
+    body_style:     null,                       // from data-vehicle-details.bodyStyle
+    mileage:        null,                       // from data-vehicle-details.mileage
+    vin:            null,                       // from data-vehicle-details.vin or page body
+    trim:           null,                       // from data-vehicle-details.trim
+    dealer_name:    null,
+    photos:         "[part='thumbnail-grid'] button img",  // all photos at /xxlarge/
+    photo_attr:     "src",
+  },
+
+  sold_indicators: [
+    "listing is no longer available",
+    "vehicle is no longer available",
+    "this vehicle has been sold",
+    "listing not found",
+  ],
+
   photo_hints: {
-    exterior_position: "first",
-    exterior_count:    10,
+    exterior_count: null,  // Cars.com doesn't sort exterior/interior predictably
+    interior_start: null,
   },
 };
 
@@ -235,7 +296,7 @@ export function getConfigForDomain(domain) {
     };
   }
 
-  if (domain.includes("cars.com")) return CARS_COM_CONFIG;
+  if (domain.includes("cars.com")) return { ...CARS_COM_CONFIG };
 
   return null;
 }

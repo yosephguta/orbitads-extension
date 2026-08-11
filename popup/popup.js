@@ -127,6 +127,8 @@ async function checkSubscriptionStatus() {
       is_blocked:           user.is_blocked || false,
       subscription_message: user.subscription_message || null,
       subscription_status:  user.subscription_status,
+      trial_video_count:    user.trial_video_count || 0,
+      trial_ends_at:        user.trial_ends_at || null,
       cached_at:            Date.now(),
     };
 
@@ -151,7 +153,7 @@ function showSubscriptionOverlay(message_type) {
     trial_expired: {
       icon:    "⏰",
       title:   "Your Free Trial Has Ended",
-      message: "Your 14-day free trial has expired. Upgrade to a paid plan to continue generating video ads and posting to Facebook.",
+      message: "Your free trial has expired. Upgrade to a paid plan to continue generating video ads and posting to Facebook.",
     },
     past_due: {
       icon:    "💳",
@@ -201,6 +203,11 @@ let modalQueueItemId = null;
 let savedScripts          = [];
 let selectedSavedScript   = null;
 let currentGeneratedPrompt = null;
+let quickLaunchUrls = {
+  cars_com: null,
+  cargurus: null,
+  dealer:   null,
+};
 
 // Onboarding state
 let onboardingState = {
@@ -414,6 +421,13 @@ function updateSoldStat(listings) {
 
 // Delegated click handler for job list — handles dynamically rendered cards
 document.getElementById("jobList")?.addEventListener("click", async (e) => {
+  // Upgrade prompt from a trial-limited failed card
+  if (e.target.closest(".upgrade-from-card-btn")) {
+    e.stopPropagation();
+    chrome.tabs.create({ url: "https://dealersorbit.com/billing" });
+    return;
+  }
+
   // Generate Ad button
   const generateBtn = e.target.closest(".generate-btn");
   if (generateBtn && !generateBtn.disabled) {
@@ -606,10 +620,61 @@ signOutBtn?.addEventListener("click", async () => {
     'onboarding_card_selector', 'onboarding_detail_url',
     'onboarding_prices', 'onboarding_waiting_detail',
     'current_generating_vin', 'userLanguage', 'dealersorbit_migrated',
+    'has_imported_vehicle',
   ]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
   console.log('DealersOrbit: Signed out, storage cleared');
+});
+
+// ── Billing / Stripe Customer Portal ─────────────────────────
+// Returns the Stripe Customer Portal URL, or throws if the user has no
+// billing account (backend returns 400 when stripe_customer_id is unset).
+async function openStripePortal() {
+  const { token } = await chrome.storage.local.get('token');
+  const resp = await fetch(`${API_BASE}/billing/portal`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+  if (!resp.ok) throw new Error('Could not open billing portal');
+  const data = await resp.json();
+  return data.url;
+}
+
+// Settings → Manage Subscription (paid users) → open the Stripe portal.
+document.getElementById('manageSubscriptionBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('manageSubscriptionBtn');
+  const originalText = btn.textContent;
+  btn.textContent = 'Loading...';
+  btn.disabled    = true;
+  try {
+    const url = await openStripePortal();
+    chrome.tabs.create({ url });
+  } catch (err) {
+    alert('Could not open billing portal. Please contact support@dealersorbit.com');
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled    = false;
+  }
+});
+
+// Subscription overlay → Upgrade to Continue. Existing customers (cancelled /
+// past_due) get the Stripe portal; new users with no billing account fall back
+// to the website billing page.
+document.getElementById('overlayUpgradeBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('overlayUpgradeBtn');
+  const originalText = btn.textContent;
+  btn.textContent = 'Loading...';
+  btn.disabled    = true;
+  try {
+    const url = await openStripePortal();
+    chrome.tabs.create({ url });
+  } catch (err) {
+    chrome.tabs.create({ url: 'https://dealersorbit.com/billing' });
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled    = false;
+  }
 });
 
 // ── Onboarding ────────────────────────────────────────────────
@@ -636,6 +701,46 @@ async function checkAndStartOnboarding(user) {
   if (!user?.dealership_url) return;
 
   showOnboardingStep('welcome');
+}
+
+// ── First-import welcome prompt (replaces the old onboarding wizard) ──
+async function checkShowWelcome(user) {
+  // Never show for admins
+  if (ADMIN_EMAILS.includes(user?.email?.toLowerCase())) return;
+
+  // Already imported something — never show again
+  const { has_imported_vehicle } = await chrome.storage.local.get('has_imported_vehicle');
+  if (has_imported_vehicle) return;
+
+  // Any existing queue/review items also mean the product has been used
+  const { pending_review_queue = [], queue = [] } =
+    await chrome.storage.local.get(['pending_review_queue', 'queue']);
+  if (pending_review_queue.length > 0 || queue.length > 0) {
+    await chrome.storage.local.set({ has_imported_vehicle: true });
+    return;
+  }
+
+  const overlay = document.getElementById('welcomeOverlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+
+  // Use onclick (not addEventListener) so repeated popup opens don't stack listeners
+  document.getElementById('welcomeOpenCarsBtn').onclick = () => {
+    chrome.tabs.create({ url: 'https://www.cars.com/shopping/results/' });
+    hideWelcome();
+  };
+  document.getElementById('welcomeOpenCgBtn').onclick = () => {
+    chrome.tabs.create({ url: 'https://www.cargurus.com/Cars/new/nl/d-Used-Cars' });
+    hideWelcome();
+  };
+  document.getElementById('welcomeDismissBtn').onclick = () => {
+    hideWelcome();
+  };
+}
+
+function hideWelcome() {
+  const overlay = document.getElementById('welcomeOverlay');
+  if (overlay) overlay.style.display = 'none';
 }
 
 function showOnboardingStep(stepName, data = {}) {
@@ -1478,9 +1583,149 @@ async function showSettingsScreen() {
   loadOutroSettings();
   loadVoiceSettings();
   loadTaglineSettings();
+  loadQuickLaunchSettings(user);
 }
 
 settingsBtn?.addEventListener("click", showSettingsScreen);
+
+// ── Quick Launch settings section ────────────────────────────
+let quickLaunchHandlersBound = false;
+
+async function loadQuickLaunchSettings(user) {
+  const carsInput   = document.getElementById('carsComUrlInput');
+  const cgInput     = document.getElementById('cargurusUrlInput');
+  const dealerInput = document.getElementById('dealerInventoryUrlInput');
+
+  if (carsInput)   carsInput.value   = user?.cars_com_url         || '';
+  if (cgInput)     cgInput.value     = user?.cargurus_url         || '';
+  if (dealerInput) dealerInput.value = user?.dealer_inventory_url || '';
+
+  // Dealer-site configuration is a paid feature — only active subscribers can
+  // request it (matches the backend gate). Everyone else sees the upgrade note.
+  const canConfigure = user?.subscription_status === 'active';
+  const freeMsg = document.getElementById('dealerSiteFreeMsg');
+  const paidSec = document.getElementById('dealerSitePaidSection');
+  if (freeMsg) freeMsg.style.display = canConfigure ? 'none'  : 'block';
+  if (paidSec) paidSec.style.display = canConfigure ? 'block' : 'none';
+
+  // Already-requested state
+  const reqMsg = document.getElementById('dealerConfigRequestedMsg');
+  const reqBtn = document.getElementById('requestDealerConfigBtn');
+  if (user?.dealer_config_requested) {
+    if (reqMsg) reqMsg.style.display = 'block';
+    if (reqBtn) { reqBtn.textContent = 'Request Submitted ✓'; reqBtn.disabled = true; }
+  } else {
+    if (reqMsg) reqMsg.style.display = 'none';
+    if (reqBtn) { reqBtn.textContent = 'Request Configuration'; reqBtn.disabled = false; }
+  }
+
+  if (quickLaunchHandlersBound) return;   // bind click handlers once
+  quickLaunchHandlersBound = true;
+
+  document.getElementById('openCarsComBtn')?.addEventListener('click', () => {
+    const url = document.getElementById('carsComUrlInput')?.value.trim();
+    if (url) chrome.tabs.create({ url });
+  });
+  document.getElementById('openCargurusBtn')?.addEventListener('click', () => {
+    const url = document.getElementById('cargurusUrlInput')?.value.trim();
+    if (url) chrome.tabs.create({ url });
+  });
+  document.getElementById('upgradeForDealerSiteBtn')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: 'https://dealersorbit.com/billing' });
+  });
+
+  // Request dealer configuration
+  document.getElementById('requestDealerConfigBtn')?.addEventListener('click', async () => {
+    const url = document.getElementById('dealerInventoryUrlInput')?.value.trim();
+    if (!url) { alert('Please enter your dealer inventory URL first.'); return; }
+
+    const btn = document.getElementById('requestDealerConfigBtn');
+    btn.textContent = 'Submitting...';
+    btn.disabled    = true;
+
+    try {
+      const { token } = await chrome.storage.local.get('token');
+      // Save the URL first
+      await fetch(`${API_BASE}/auth/me`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body:    JSON.stringify({ dealer_inventory_url: url }),
+      });
+      // Then request config
+      const resp = await fetch(`${API_BASE}/auth/request-dealer-config`, {
+        method:  'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || 'Request failed');
+      }
+
+      const reqMsgEl = document.getElementById('dealerConfigRequestedMsg');
+      if (reqMsgEl) reqMsgEl.style.display = 'block';
+      btn.textContent = 'Request Submitted ✓';
+
+      // Update local user cache
+      const { user: cached = {} } = await chrome.storage.local.get('user');
+      cached.dealer_config_requested = true;
+      cached.dealer_inventory_url    = url;
+      await chrome.storage.local.set({ user: cached });
+
+    } catch (err) {
+      alert(err.message);
+      btn.textContent = 'Request Configuration';
+      btn.disabled    = false;
+    }
+  });
+
+  // Save quick launch links
+  document.getElementById('saveQuickLaunchBtn')?.addEventListener('click', async () => {
+    const saveBtn  = document.getElementById('saveQuickLaunchBtn');
+    const savedMsg = document.getElementById('quickLaunchSaved');
+    const carsUrl  = document.getElementById('carsComUrlInput')?.value.trim();
+    const cgUrl    = document.getElementById('cargurusUrlInput')?.value.trim();
+    const dlrUrl   = document.getElementById('dealerInventoryUrlInput')?.value.trim();
+
+    saveBtn.disabled    = true;
+    saveBtn.textContent = 'Saving...';
+
+    try {
+      const { token } = await chrome.storage.local.get('token');
+      await fetch(`${API_BASE}/auth/me`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          cars_com_url:         carsUrl || null,
+          cargurus_url:         cgUrl   || null,
+          dealer_inventory_url: dlrUrl  || null,
+        }),
+      });
+
+      // Update in-memory + cached user, then refresh dashboard buttons
+      quickLaunchUrls.cars_com = carsUrl || null;
+      quickLaunchUrls.cargurus = cgUrl   || null;
+      quickLaunchUrls.dealer   = dlrUrl  || null;
+
+      const { user: cached = {} } = await chrome.storage.local.get('user');
+      cached.cars_com_url         = carsUrl || null;
+      cached.cargurus_url         = cgUrl   || null;
+      cached.dealer_inventory_url = dlrUrl  || null;
+      await chrome.storage.local.set({ user: cached });
+
+      await loadQuickLaunch(cached);
+
+      if (savedMsg) {
+        savedMsg.style.display = 'block';
+        setTimeout(() => { savedMsg.style.display = 'none'; }, 2000);
+      }
+    } catch (err) {
+      alert('Failed to save. Please try again.');
+    } finally {
+      saveBtn.disabled    = false;
+      saveBtn.textContent = 'Save Quick Launch Links';
+    }
+  });
+}
 
 document.getElementById("saveSettingsBtn")?.addEventListener("click", async () => {
   const { token } = await chrome.storage.local.get("token");
@@ -2407,6 +2652,8 @@ async function init() {
         is_blocked:           meData.is_blocked || false,
         subscription_message: meData.subscription_message || null,
         subscription_status:  meData.subscription_status,
+        trial_video_count:    meData.trial_video_count || 0,
+        trial_ends_at:        meData.trial_ends_at || null,
         cached_at:            Date.now(),
       };
       await chrome.storage.local.set({ subscription_cache: subStatus, user: meData });
@@ -2421,7 +2668,10 @@ async function init() {
     }
 
     await syncSoldNotificationsFromBackend();
-    await checkAndStartOnboarding(freshUser);
+
+    await loadQuickLaunch(freshUser);
+    attachQuickLaunchHandlers();
+    await checkShowWelcome(freshUser);
 
     renderQueue();
     await restartPollingIfNeeded();
@@ -2624,7 +2874,7 @@ loginBtn.addEventListener("click", async () => {
     renderQueue();
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
-    await checkAndStartOnboarding(user);
+    await checkShowWelcome(user);
 
   } catch (err) {
     loginError.textContent = err.message;
@@ -2653,6 +2903,7 @@ logoutBtn.addEventListener("click", async () => {
     'onboarding_card_selector', 'onboarding_detail_url',
     'onboarding_prices', 'onboarding_waiting_detail',
     'current_generating_vin', 'userLanguage', 'dealersorbit_migrated',
+    'has_imported_vehicle',
   ]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
@@ -2789,6 +3040,113 @@ let recentAdsLoadCount = 0;
 let statsFromBackend   = false; // once backend listings load, stop queue from overwriting stats
 
 // ── Queue rendering ───────────────────────────────────────────
+// ── Quick Launch (dashboard shortcut buttons) ────────────────
+async function loadQuickLaunch(user) {
+  quickLaunchUrls = {
+    cars_com: user?.cars_com_url         || null,
+    cargurus: user?.cargurus_url         || null,
+    dealer:   user?.dealer_inventory_url || null,
+  };
+
+  const btnMap = {
+    cars_com: document.getElementById('qlCarsBtn'),
+    cargurus: document.getElementById('qlCarGurusBtn'),
+    dealer:   document.getElementById('qlDealerBtn'),
+  };
+
+  Object.entries(btnMap).forEach(([key, btn]) => {
+    if (!btn) return;
+    if (quickLaunchUrls[key]) {
+      btn.classList.add('configured');
+      btn.title = quickLaunchUrls[key];
+    } else {
+      btn.classList.remove('configured');
+      btn.title = key === 'dealer'
+        ? 'Configure your dealer site in Settings'
+        : `Configure your ${key === 'cars_com' ? 'Cars.com' : 'CarGurus'} page in Settings`;
+    }
+  });
+}
+
+function attachQuickLaunchHandlers() {
+  ['qlCarsBtn', 'qlCarGurusBtn', 'qlDealerBtn'].forEach(btnId => {
+    const btn = document.getElementById(btnId);
+    if (!btn || btn.dataset.qlBound) return;   // bind once
+    btn.dataset.qlBound = '1';
+    btn.addEventListener('click', async () => {
+      const source = btn.dataset.source;
+      const url    = quickLaunchUrls[source];
+
+      if (url) {
+        chrome.tabs.create({ url });
+      } else {
+        // Not configured — open Settings and scroll to the Quick Launch section
+        await showSettingsScreen();
+        await new Promise(r => setTimeout(r, 100));
+        const section = document.getElementById('quickLaunchSection');
+        section?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  });
+}
+
+// Parse a backend datetime string as UTC. The backend stores naive UTC
+// (no timezone suffix); JS would otherwise read it as local time.
+function parseUtcDate(s) {
+  if (!s) return null;
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
+  return new Date(hasTz ? s : s + 'Z');
+}
+
+// Render the "X of 5 free videos used · N days left" indicator for trial users.
+// Hidden entirely for paid/cancelled/past_due accounts.
+function renderTrialUsage(sub) {
+  const bar = document.getElementById("trialUsageBar");
+  if (!bar) return;
+
+  if (!sub || sub.subscription_status !== "trial") {
+    bar.style.display = "none";
+    bar.innerHTML = "";
+    return;
+  }
+
+  const videoCount = sub.trial_video_count || 0;
+  // Backend stores trial_ends_at as naive UTC (no tz suffix). JS parses a
+  // suffix-less ISO string as LOCAL time, which shifts the value by the user's
+  // offset — append 'Z' so it's read as UTC.
+  const trialEnd = parseUtcDate(sub.trial_ends_at);
+  const daysLeft   = trialEnd
+    ? Math.max(0, Math.ceil((trialEnd - Date.now()) / (1000 * 60 * 60 * 24)))
+    : 0;
+  const videosLeft = Math.max(0, 5 - videoCount);
+  const low        = videosLeft <= 1;
+
+  bar.style.display = "block";
+  bar.style.cssText = `
+    display:block;
+    background:${low ? "#fffbeb" : "#eff6ff"};
+    border:1px solid ${low ? "#fde68a" : "#bfdbfe"};
+    border-radius:8px;
+    padding:8px 12px;
+    margin:8px 0;
+  `;
+  bar.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px">
+      <span style="color:#374151">
+        🎬 <strong>${videoCount} of 5</strong> free videos used
+        · ${daysLeft} day${daysLeft !== 1 ? "s" : ""} left
+      </span>
+      <button class="btn-small" id="upgradeTrialBtn"
+              style="background:#1a56db;font-size:11px;padding:4px 10px">
+        Upgrade
+      </button>
+    </div>`;
+
+  document.getElementById("upgradeTrialBtn")?.addEventListener("click", () => {
+    chrome.tabs.create({ url: "https://dealersorbit.com/billing" });
+  });
+}
+
 async function renderQueue() {
   if (reviewScreen?.style.display !== "none") return;
   if (fbListingScreen?.style.display !== "none") return;
@@ -2814,6 +3172,9 @@ async function renderQueue() {
     await chrome.storage.local.get(["queue", "pending_review_queue"]);
 
   showScreen(dashboardScreen);
+
+  // ── Trial usage indicator ─────────────────────────────────
+  renderTrialUsage(subStatus);
 
   // ── Review banner ─────────────────────────────────────────
   const { config_status: _cs } = await chrome.storage.local.get('config_status');
@@ -2963,12 +3324,39 @@ function renderUnifiedCard(card) {
       badgeClass = "badge-failed";
       badgeText = "Failed";
       cardClass = "job-card job-card-failed";
-      actionBtn = `<div class="job-label" style="color:#dc2626;font-size:11px;margin-top:4px">
-                     ${getFriendlyError(job.error)}
-                   </div>
-                   <button class="btn-small remove-failed-btn"
-                           data-job-id="${job.id}"
-                           style="margin-top:6px;background:#6b7280">Remove</button>`;
+      if (job.error === "TRIAL_VIDEO_LIMIT" || job.error === "TRIAL_EXPIRED") {
+        // Trial limit hit — show an upgrade prompt instead of a generic error
+        actionBtn = `<div style="
+            background:#fffbeb;
+            border:1px solid #fde68a;
+            border-radius:8px;
+            padding:10px 12px;
+            margin-top:8px;
+            text-align:center;
+          ">
+            <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:6px">
+              ${job.error === "TRIAL_VIDEO_LIMIT"
+                ? "🎬 You've used all 5 free videos"
+                : "⏰ Your free trial has ended"}
+            </div>
+            <div style="font-size:12px;color:#6b7280;margin-bottom:10px">
+              Upgrade to continue generating unlimited video ads
+            </div>
+            <button class="btn-primary upgrade-from-card-btn" style="width:100%;font-size:12px">
+              Upgrade Account →
+            </button>
+          </div>
+          <button class="btn-small remove-failed-btn"
+                  data-job-id="${job.id}"
+                  style="margin-top:6px;background:#6b7280">Remove</button>`;
+      } else {
+        actionBtn = `<div class="job-label" style="color:#dc2626;font-size:11px;margin-top:4px">
+                       ${getFriendlyError(job.error)}
+                     </div>
+                     <button class="btn-small remove-failed-btn"
+                             data-job-id="${job.id}"
+                             style="margin-top:6px;background:#6b7280">Remove</button>`;
+      }
     }
   }
 

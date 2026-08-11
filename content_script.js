@@ -926,6 +926,16 @@ function createImportButton(vehicleData) {
       if (response?.success) {
         btn.textContent = "✓ In Queue";
         btn.style.background = "#16a34a";
+      } else if (response?.trial_blocked) {
+        // Out of free trial — importing is disabled. Turn the button into an
+        // upgrade prompt instead of silently resetting.
+        btn.disabled = false;
+        btn.textContent = response.error === "TRIAL_EXPIRED"
+          ? "🔒 Free trial ended — Upgrade"
+          : "🔒 Trial limit reached — Upgrade";
+        btn.style.background = "#f59e0b";
+        btn.title = "Upgrade your DealersOrbit account to keep importing vehicles.";
+        btn.onclick = () => window.open("https://dealersorbit.com/billing", "_blank");
       } else {
         btn.disabled = false;
         btn.textContent = "⊕ Import to DealersOrbit";

@@ -463,15 +463,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "ADD_TO_QUEUE") {
-    console.log("DealersOrbit: Received vehicle, fetching detail page...", message.vehicle);
-    const vehicle = message.vehicle;
-    // Pass source tab ID for VDP imports so enrichment can run on the current tab
-    if (vehicle.vdp_import && sender?.tab?.id) {
-      vehicle._source_tab_id = sender.tab.id;
-    }
-    enrichAndQueue(vehicle)
-      .then(result => sendResponse({ success: true, queueLength: result }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
+    (async () => {
+      // Trial gate: importing triggers Claude photo classification (costs API
+      // credits). Block it for users who are out of trial before any scraping.
+      const blockReason = await getTrialBlockReason();
+      if (blockReason) {
+        console.log("DealersOrbit: Import blocked — out of trial:", blockReason);
+        sendResponse({ success: false, trial_blocked: true, error: blockReason });
+        return;
+      }
+      console.log("DealersOrbit: Received vehicle, fetching detail page...", message.vehicle);
+      const vehicle = message.vehicle;
+      // Pass source tab ID for VDP imports so enrichment can run on the current tab
+      if (vehicle.vdp_import && sender?.tab?.id) {
+        vehicle._source_tab_id = sender.tab.id;
+      }
+      try {
+        const result = await enrichAndQueue(vehicle);
+        // Mark that the user has imported at least one vehicle — dismisses the
+        // first-import welcome prompt permanently.
+        await chrome.storage.local.set({ has_imported_vehicle: true });
+        sendResponse({ success: true, queueLength: result });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
     return true;
   }
 
@@ -776,6 +792,22 @@ const classifyQueue = [];
 
 let isAddingToGenQueue = false;
 const genQueueAdditions = [];
+
+// Returns a trial-block reason if the user is out of trial, else null.
+// Reads the popup-maintained subscription_cache (session-local storage).
+//   'TRIAL_EXPIRED'     — trial window ended (or subscription inactive)
+//   'TRIAL_VIDEO_LIMIT' — trial user who has used all 5 free videos
+async function getTrialBlockReason() {
+  const { subscription_cache: c } = await chrome.storage.local.get('subscription_cache');
+  if (!c) return null;  // no cache yet — fail open; popup populates it on open
+  if (c.is_blocked) {
+    return c.subscription_message === 'trial_expired' ? 'TRIAL_EXPIRED' : 'TRIAL_VIDEO_LIMIT';
+  }
+  if (c.subscription_status === 'trial' && (c.trial_video_count || 0) >= 5) {
+    return 'TRIAL_VIDEO_LIMIT';
+  }
+  return null;
+}
 
 async function enrichAndQueue(vehicle) {
   enrichQueue.push(vehicle);
@@ -2042,25 +2074,36 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
   // Photos-only: no video pipeline needed — mark complete immediately
   const photosOnly = videoType === "photos";
 
+  // Trial gate: photos-only listings never hit the backend, so the pipeline's
+  // trial check can't catch them. Enforce the same limit here from the cached
+  // subscription status — otherwise a trial user who's out of videos could
+  // keep creating photo listings for free.
+  const trialBlock = await getTrialBlockReason();  // null | 'TRIAL_VIDEO_LIMIT' | 'TRIAL_EXPIRED'
+
   const job = {
     id: Date.now().toString(),
     vehicle: vehicle,
     video_type: videoType,
     outro_video_id: outroVideoId,
-    status: photosOnly ? "completed" : "waiting",
+    status: trialBlock ? "failed" : (photosOnly ? "completed" : "waiting"),
     custom_script: customScript || null,
     theme: theme,
     language: language || 'en',
     added_at: new Date().toISOString(),
-    progress: photosOnly ? 100 : 0,
-    label: photosOnly ? "Photos ready — Post to FB" : "Waiting...",
-    error: null,
+    progress: trialBlock ? 0 : (photosOnly ? 100 : 0),
+    label: trialBlock
+      ? (trialBlock === 'TRIAL_EXPIRED' ? "Trial expired" : "Trial limit reached")
+      : (photosOnly ? "Photos ready — Post to FB" : "Waiting..."),
+    error: trialBlock,
     result_url: null,
   };
 
   queue.push(job);
   await chrome.storage.local.set({ queue });
-  if (!photosOnly) processQueue();
+  // Drop the cached subscription status so the popup's trial usage indicator
+  // refetches a fresh count on its next render tick.
+  if (trialBlock) await chrome.storage.local.remove('subscription_cache');
+  if (!photosOnly && !trialBlock) processQueue();
   return queue.length;
 }
 
@@ -2187,13 +2230,31 @@ async function resumePolling(job, queue) {
           applyNhtsaToVehicle(job.vehicle, pollData.vehicle_data);
           await saveQueue(queue);
           await saveToListingHistory(job, pollData, token);
+          // Trial video count changed on the backend — drop the cache so the
+          // popup's trial usage indicator refetches a fresh count.
+          await chrome.storage.local.remove('subscription_cache');
           processQueue();
           return;
         }
 
         if (pollData.status === 'failed') {
-          job.status = 'failed';
-          job.error  = pollData.error_message || 'Pipeline failed';
+          const errorMsg = pollData.error_message || '';
+          if (errorMsg === 'TRIAL_VIDEO_LIMIT') {
+            job.status = 'failed';
+            job.error  = 'TRIAL_VIDEO_LIMIT';
+            job.label  = 'Trial limit reached';
+          } else if (errorMsg === 'TRIAL_EXPIRED') {
+            job.status = 'failed';
+            job.error  = 'TRIAL_EXPIRED';
+            job.label  = 'Trial expired';
+          } else {
+            job.status = 'failed';
+            job.error  = errorMsg || 'Generation failed';
+            job.label  = 'Failed';
+          }
+          if (job.error === 'TRIAL_VIDEO_LIMIT' || job.error === 'TRIAL_EXPIRED') {
+            await chrome.storage.local.remove('subscription_cache');
+          }
           await saveQueue(queue);
           processQueue();
           return;
@@ -2311,14 +2372,32 @@ async function realProcessing(job, queue) {
       applyNhtsaToVehicle(job.vehicle, pollData.vehicle_data);
       await saveQueue(queue);
       await saveToListingHistory(jobSnapshot, pollData, token);
+      // Trial video count changed on the backend — drop the cache so the
+      // popup's trial usage indicator refetches a fresh count.
+      await chrome.storage.local.remove("subscription_cache");
       return;
     }
 
     if (pollData.status === "failed") {
-      job.status = "failed";
-      job.error = pollData.error_message || "Pipeline failed.";
+      const errorMsg = pollData.error_message || "";
+      if (errorMsg === "TRIAL_VIDEO_LIMIT") {
+        job.status = "failed";
+        job.error  = "TRIAL_VIDEO_LIMIT";
+        job.label  = "Trial limit reached";
+      } else if (errorMsg === "TRIAL_EXPIRED") {
+        job.status = "failed";
+        job.error  = "TRIAL_EXPIRED";
+        job.label  = "Trial expired";
+      } else {
+        job.status = "failed";
+        job.error  = errorMsg || "Pipeline failed.";
+        job.label  = "Failed";
+      }
+      if (job.error === "TRIAL_VIDEO_LIMIT" || job.error === "TRIAL_EXPIRED") {
+        await chrome.storage.local.remove("subscription_cache");
+      }
       await saveQueue(queue);
-      throw new Error(pollData.error_message || "Pipeline failed.");
+      throw new Error(errorMsg || "Pipeline failed.");
     }
   }
 }

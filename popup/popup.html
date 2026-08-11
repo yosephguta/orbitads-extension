@@ -76,6 +76,9 @@
       </div>
     </div>
 
+    <!-- Trial usage indicator (trial users only) -->
+    <div id="trialUsageBar" style="display:none"></div>
+
     <!-- Notifications -->
     <div id="soldBanner" class="sold-banner" style="display:none"></div>
     <div id="staleBanner" class="resume-banner" style="display:none"></div>
@@ -87,6 +90,30 @@
     <div id="fbCountdownBanner" class="fb-countdown-banner" style="display:none">
       <span>📘 Next safe Facebook post in</span>
       <span id="fbCountdownTimer" class="fb-countdown-time">--:--</span>
+    </div>
+
+    <!-- Quick Launch -->
+    <div id="quickLaunchBar" style="
+      display:flex;
+      gap:6px;
+      padding:10px 12px 6px;
+      border-bottom:1px solid #f3f4f6;
+    ">
+      <button class="quick-launch-btn" id="qlCarsBtn" data-source="cars_com"
+              title="Open your Cars.com dealer page">
+        <span class="ql-icon">🚗</span>
+        <span class="ql-label">Cars.com</span>
+      </button>
+      <button class="quick-launch-btn" id="qlCarGurusBtn" data-source="cargurus"
+              title="Open your CarGurus dealer page">
+        <span class="ql-icon">🔍</span>
+        <span class="ql-label">CarGurus</span>
+      </button>
+      <button class="quick-launch-btn" id="qlDealerBtn" data-source="dealer"
+              title="Open your dealership inventory page">
+        <span class="ql-icon">🏢</span>
+        <span class="ql-label">Dealer Site</span>
+      </button>
     </div>
 
     <!-- Queue -->
@@ -447,6 +474,91 @@
       <div class="settings-saved" id="settingsSaved" style="display:none">✓ Saved</div>
     </div>
 
+    <div class="settings-section" id="quickLaunchSection">
+      <div class="settings-section-title">🚀 Quick Launch</div>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 16px;line-height:1.5">
+        Configure these links so you can open your inventory pages directly
+        from the DealersOrbit popup.
+      </p>
+
+      <!-- Cars.com -->
+      <div class="form-group">
+        <label>🚗 Cars.com Dealer Page</label>
+        <p style="font-size:11px;color:#9ca3af;margin:0 0 6px;line-height:1.4">
+          Search <strong>"[your dealership name] cars.com"</strong> on Google,
+          open the page, copy the URL and paste it here.
+        </p>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="carsComUrlInput"
+                 placeholder="https://www.cars.com/dealers/6064300/jba-kia/"
+                 style="flex:1">
+          <button class="btn-small" id="openCarsComBtn"
+                  style="background:#f3f4f6;color:#374151;white-space:nowrap"
+                  title="Open in new tab">↗</button>
+        </div>
+      </div>
+
+      <!-- CarGurus -->
+      <div class="form-group">
+        <label>🔍 CarGurus Dealer Page</label>
+        <p style="font-size:11px;color:#9ca3af;margin:0 0 6px;line-height:1.4">
+          Search <strong>"[your dealership name] cargurus"</strong> on Google,
+          open the page, copy the URL and paste it here.
+        </p>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="cargurusUrlInput"
+                 placeholder="https://www.cargurus.com/Cars/m-Bob-Bell-Hyundai-sp371639"
+                 style="flex:1">
+          <button class="btn-small" id="openCargurusBtn"
+                  style="background:#f3f4f6;color:#374151;white-space:nowrap"
+                  title="Open in new tab">↗</button>
+        </div>
+      </div>
+
+      <!-- Dealer Site -->
+      <div class="form-group">
+        <label>🏢 Dealer Inventory Site</label>
+        <div id="dealerSiteFreeMsg" style="display:none;
+          background:#fffbeb;border:1px solid #fde68a;border-radius:8px;
+          padding:10px 12px;font-size:12px;color:#92400e;margin-bottom:8px">
+          🔒 Dealer site configuration is available on paid plans.<br>
+          <button class="btn-small" id="upgradeForDealerSiteBtn"
+                  style="background:#1a56db;margin-top:8px;font-size:11px">
+            Upgrade to Configure →
+          </button>
+        </div>
+        <div id="dealerSitePaidSection" style="display:none">
+          <p style="font-size:11px;color:#9ca3af;margin:0 0 6px;line-height:1.4">
+            Enter your dealership's used car inventory page URL.
+            We'll configure DealersOrbit to work with it within 24 hours.
+          </p>
+          <input type="text" id="dealerInventoryUrlInput"
+                 placeholder="https://www.yourdealership.com/used-inventory"
+                 style="width:100%;margin-bottom:8px">
+          <button class="btn-primary" id="requestDealerConfigBtn" style="width:100%">
+            Request Configuration
+          </button>
+          <div id="dealerConfigRequestedMsg" style="
+            display:none;
+            background:#f0fdf4;
+            border:1px solid #bbf7d0;
+            border-radius:8px;
+            padding:10px 12px;
+            font-size:12px;
+            color:#15803d;
+            margin-top:8px;
+          ">
+            ✓ Request submitted! Your dealer site will be configured within 24 hours.
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="saveQuickLaunchBtn">
+        Save Quick Launch Links
+      </button>
+      <div class="settings-saved" id="quickLaunchSaved" style="display:none">✓ Saved</div>
+    </div>
+
     <div class="settings-section">
       <div class="settings-section-title">Outro Videos</div>
       <div class="form-group">
@@ -506,10 +618,10 @@
         <span>Plan</span>
         <span class="settings-value">Basic — $99/month</span>
       </div>
-      <a href="https://dealersorbit.com/billing" target="_blank" class="btn-secondary"
-        style="display:block;text-align:center;text-decoration:none;margin-top:8px">
+      <button id="manageSubscriptionBtn" class="btn-secondary"
+        style="display:block;width:100%;text-align:center;margin-top:8px">
         Manage Subscription
-      </a>
+      </button>
     </div>
 
     <div class="settings-section">
@@ -722,17 +834,16 @@
         margin:0 0 24px;
         line-height:1.5;
       "></p>
-      <a href="https://dealersorbit.com/billing"
-         target="_blank"
+      <button id="overlayUpgradeBtn"
          class="btn-primary"
          style="
            display:block;
-           text-decoration:none;
+           width:100%;
            text-align:center;
            margin-bottom:12px;
          ">
         Upgrade to Continue →
-      </a>
+      </button>
       <p style="font-size:11px;color:#9ca3af;margin:0">
         Questions? Email
         <a href="mailto:support@dealersorbit.com"
@@ -741,14 +852,13 @@
     </div>
   </div>
 
-  <!-- New onboarding wizard overlay -->
-  <div id="onboardingOverlay" style="
+  <!-- First-import welcome prompt -->
+  <div id="welcomeOverlay" style="
     display:none;
     position:fixed;
     inset:0;
-    background:rgba(0,0,0,0.85);
+    background:rgba(0,0,0,0.75);
     z-index:500;
-    flex-direction:column;
     align-items:center;
     justify-content:center;
     padding:20px;
@@ -756,22 +866,61 @@
     <div style="
       background:white;
       border-radius:16px;
+      padding:28px 24px;
+      max-width:320px;
       width:100%;
-      max-width:340px;
-      overflow:hidden;
+      text-align:center;
     ">
-      <!-- Progress bar -->
-      <div style="height:4px;background:#f3f4f6">
-        <div id="onboardingProgress" style="
-          height:100%;
-          background:#1a56db;
-          transition:width 0.3s;
-          width:0%;
-        "></div>
+      <div style="font-size:48px;margin-bottom:16px">👋</div>
+      <h2 style="font-size:18px;font-weight:700;color:#111827;margin:0 0 12px">
+        Welcome to DealersOrbit!
+      </h2>
+      <p style="font-size:13px;color:#6b7280;line-height:1.5;margin:0 0 20px">
+        To import your first vehicle, find your dealership on
+        <strong>Cars.com</strong> or <strong>CarGurus</strong>.
+      </p>
+      <div style="
+        background:#f9fafb;
+        border:1px solid #e5e7eb;
+        border-radius:10px;
+        padding:14px;
+        margin-bottom:20px;
+        text-align:left;
+      ">
+        <p style="font-size:12px;color:#374151;margin:0 0 8px;font-weight:600">
+          💡 How to find your dealership:
+        </p>
+        <p style="font-size:12px;color:#6b7280;margin:0;line-height:1.5">
+          Search <strong>"[your dealership name] CarGurus"</strong> or
+          <strong>"[your dealership name] Cars.com"</strong> on Google —
+          open the page and click Import on any vehicle.
+        </p>
       </div>
-
-      <!-- Step content — swapped by JS -->
-      <div id="onboardingStepContent" style="padding:24px"></div>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <button id="welcomeOpenCarsBtn" style="
+          flex:1;padding:10px 8px;
+          background:#1a56db;color:white;
+          border:none;border-radius:8px;
+          font-size:12px;font-weight:700;cursor:pointer;
+        ">
+          🚗 Open Cars.com
+        </button>
+        <button id="welcomeOpenCgBtn" style="
+          flex:1;padding:10px 8px;
+          background:#16a34a;color:white;
+          border:none;border-radius:8px;
+          font-size:12px;font-weight:700;cursor:pointer;
+        ">
+          🔍 Open CarGurus
+        </button>
+      </div>
+      <button id="welcomeDismissBtn" style="
+        background:none;border:none;
+        color:#9ca3af;font-size:12px;
+        cursor:pointer;padding:4px;
+      ">
+        I'll find it myself →
+      </button>
     </div>
   </div>
 

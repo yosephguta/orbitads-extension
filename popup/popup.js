@@ -141,6 +141,8 @@ async function checkSubscriptionStatus() {
   }
 }
 
+let currentBlockReason = null;  // remembers why the subscription overlay is showing
+
 function showSubscriptionOverlay(message_type) {
   const overlay = document.getElementById("subscriptionOverlay");
   const icon    = document.getElementById("overlayIcon");
@@ -148,6 +150,8 @@ function showSubscriptionOverlay(message_type) {
   const message = document.getElementById("overlayMessage");
 
   if (!overlay) return;
+
+  currentBlockReason = message_type;
 
   const content = {
     trial_expired: {
@@ -421,10 +425,10 @@ function updateSoldStat(listings) {
 
 // Delegated click handler for job list — handles dynamically rendered cards
 document.getElementById("jobList")?.addEventListener("click", async (e) => {
-  // Upgrade prompt from a trial-limited failed card
+  // Upgrade prompt from a trial-limited failed card → in-extension plan picker
   if (e.target.closest(".upgrade-from-card-btn")) {
     e.stopPropagation();
-    chrome.tabs.create({ url: "https://dealersorbit.com/billing" });
+    openUpgradeModal("TRIAL_VIDEO_LIMIT");
     return;
   }
 
@@ -641,8 +645,179 @@ async function openStripePortal() {
   return data.url;
 }
 
+// ── Upgrade / plan picker modal ──────────────────────────────
+// Individual signups pick Pro ($99) or Elite ($129); dealership signups get a
+// single Dealership ($799) card. Selecting a plan → Stripe checkout via Part 2's
+// POST /billing/checkout/{plan} (returns {url}).
+let selectedUpgradePlan = null;
+
+async function openUpgradeModal(reason = null) {
+  selectedUpgradePlan = null;
+
+  const { user } = await chrome.storage.local.get('user');
+  const isDealershipSignup = user?.signup_plan === 'dealership';
+
+  const modal          = document.getElementById('upgradeModal');
+  const subtitle       = document.getElementById('upgradeModalSubtitle');
+  const proceedBtn     = document.getElementById('upgradeProceedBtn');
+  const errorEl        = document.getElementById('upgradeModalError');
+  const plansContainer = document.getElementById('upgradePlansContainer');
+
+  if (!modal) return;
+
+  // Subtitle based on why the modal opened
+  const subtitles = {
+    'TRIAL_VIDEO_LIMIT': "You've used all 5 free videos — upgrade to continue",
+    'TRIAL_EXPIRED':     "Your 7-day trial has ended — upgrade to continue",
+    'past_due':          'Update your payment to restore access',
+    'outro_upsell':      'Personal outros are available on Elite',
+  };
+  subtitle.textContent = subtitles[reason] || 'Choose a plan to unlock unlimited ads';
+
+  if (isDealershipSignup) {
+    plansContainer.innerHTML = `
+      <div style="
+        background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;
+        padding:16px;margin-bottom:12px;text-align:center;
+      ">
+        <div style="font-size:14px;font-weight:700;color:#111827">DealersOrbit Dealership</div>
+        <div style="font-size:24px;font-weight:800;color:#1a56db;margin:6px 0">$799<span style="font-size:13px;color:#9ca3af">/mo</span></div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:14px">Full team access, manager dashboard, dealer site config</div>
+        <button id="purchaseDealershipBtn" class="btn-primary" style="margin-bottom:8px">
+          Purchase Now →
+        </button>
+        <button id="contactForDealershipBtn" class="btn-secondary">
+          Email Us to Get Started
+        </button>
+      </div>
+    `;
+
+    document.getElementById('purchaseDealershipBtn')?.addEventListener('click', () => {
+      startCheckout('dealership');
+    });
+    document.getElementById('contactForDealershipBtn')?.addEventListener('click', () => {
+      chrome.tabs.create({ url: 'mailto:mail@dealersorbit.com?subject=Ready to upgrade my Dealership plan' });
+    });
+
+    proceedBtn.style.display = 'none';
+
+  } else {
+    // Individual — Pro and Elite
+    plansContainer.innerHTML = `
+      <div class="upgrade-plan-option" data-plan="pro">
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:700;color:#111827">Pro</div>
+          <div style="font-size:12px;color:#6b7280">Photos & slideshow videos</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:16px;font-weight:700;color:#1a56db">$99</div>
+          <div style="font-size:11px;color:#9ca3af">/month</div>
+        </div>
+      </div>
+      <div class="upgrade-plan-option" data-plan="elite">
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:700;color:#111827">Elite</div>
+          <div style="font-size:12px;color:#6b7280">+ Personal video outros</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:16px;font-weight:700;color:#1a56db">$129</div>
+          <div style="font-size:11px;color:#9ca3af">/month</div>
+        </div>
+      </div>
+    `;
+
+    document.querySelectorAll('.upgrade-plan-option').forEach(option => {
+      option.addEventListener('click', () => {
+        document.querySelectorAll('.upgrade-plan-option')
+                .forEach(o => o.classList.remove('selected'));
+        option.classList.add('selected');
+        selectedUpgradePlan = option.dataset.plan;
+        proceedBtn.disabled = false;
+      });
+    });
+
+    proceedBtn.style.display = 'block';
+    proceedBtn.disabled      = true;
+    proceedBtn.textContent   = 'Continue to Payment →';
+  }
+
+  if (errorEl) errorEl.style.display = 'none';
+  modal.style.display = 'flex';
+
+  // .onclick (not addEventListener) so repeated opens don't stack handlers
+  proceedBtn.onclick = async () => {
+    if (!selectedUpgradePlan) return;
+    await startCheckout(selectedUpgradePlan);
+  };
+  document.getElementById('upgradeModalCloseBtn').onclick = () => {
+    modal.style.display = 'none';
+  };
+}
+
+async function startCheckout(plan) {
+  const proceedBtn = document.getElementById('upgradeProceedBtn') ||
+                     document.getElementById('purchaseDealershipBtn');
+  const errorEl    = document.getElementById('upgradeModalError');
+
+  if (proceedBtn) {
+    proceedBtn.textContent = 'Opening checkout...';
+    proceedBtn.disabled    = true;
+  }
+  if (errorEl) errorEl.style.display = 'none';
+
+  try {
+    const { token } = await chrome.storage.local.get('token');
+    const resp = await fetch(`${API_BASE}/billing/checkout/${plan}`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not create checkout session');
+    }
+
+    const data = await resp.json();
+    chrome.tabs.create({ url: data.url });
+    document.getElementById('upgradeModal').style.display = 'none';
+
+  } catch (err) {
+    if (errorEl) {
+      errorEl.textContent   = err.message;
+      errorEl.style.display = 'block';
+    }
+    if (proceedBtn) {
+      proceedBtn.textContent = 'Continue to Payment →';
+      proceedBtn.disabled    = false;
+    }
+  }
+}
+
+// ── Outro upsell (Pro users clicking Slideshow + Outro) ──────
+function showOutroUpsellModal() {
+  const modal = document.getElementById('outroUpsellModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+document.getElementById('upgradeToEliteBtn')?.addEventListener('click', () => {
+  document.getElementById('outroUpsellModal').style.display = 'none';
+  openUpgradeModal('outro_upsell');
+});
+
+document.getElementById('outroUpsellCloseBtn')?.addEventListener('click', () => {
+  document.getElementById('outroUpsellModal').style.display = 'none';
+});
+
 // Settings → Manage Subscription (paid users) → open the Stripe portal.
 document.getElementById('manageSubscriptionBtn')?.addEventListener('click', async () => {
+  // Trial users have no subscription to manage yet — the Stripe portal would be
+  // empty. Send them to the in-extension plan picker to choose Pro/Elite instead.
+  const { user } = await chrome.storage.local.get('user');
+  if (user?.subscription_status === 'trial') {
+    openUpgradeModal();
+    return;
+  }
+
   const btn = document.getElementById('manageSubscriptionBtn');
   const originalText = btn.textContent;
   btn.textContent = 'Loading...';
@@ -651,7 +826,8 @@ document.getElementById('manageSubscriptionBtn')?.addEventListener('click', asyn
     const url = await openStripePortal();
     chrome.tabs.create({ url });
   } catch (err) {
-    alert('Could not open billing portal. Please contact support@dealersorbit.com');
+    // No billing account / portal error — fall back to the in-extension plan picker.
+    openUpgradeModal();
   } finally {
     btn.textContent = originalText;
     btn.disabled    = false;
@@ -662,6 +838,13 @@ document.getElementById('manageSubscriptionBtn')?.addEventListener('click', asyn
 // past_due) get the Stripe portal; new users with no billing account fall back
 // to the website billing page.
 document.getElementById('overlayUpgradeBtn')?.addEventListener('click', async () => {
+  // Trial-expired users have no billing account yet — send them to the in-extension
+  // plan picker. Existing customers (past_due / cancelled) go to the Stripe portal.
+  if (currentBlockReason === 'trial_expired') {
+    openUpgradeModal('TRIAL_EXPIRED');
+    return;
+  }
+
   const btn = document.getElementById('overlayUpgradeBtn');
   const originalText = btn.textContent;
   btn.textContent = 'Loading...';
@@ -670,7 +853,7 @@ document.getElementById('overlayUpgradeBtn')?.addEventListener('click', async ()
     const url = await openStripePortal();
     chrome.tabs.create({ url });
   } catch (err) {
-    chrome.tabs.create({ url: 'https://dealersorbit.com/billing' });
+    chrome.tabs.create({ url: 'https://dealersorbit.com/#pricing' });
   } finally {
     btn.textContent = originalText;
     btn.disabled    = false;
@@ -1564,12 +1747,34 @@ document.getElementById("saveTaglineBtn")?.addEventListener("click", async () =>
 });
 
 // Settings screen populate
+// Human-readable plan label for the Settings subscription box.
+function planLabel(user) {
+  const PLANS = {
+    pro:        "Pro — $99/month",
+    elite:      "Elite — $129/month",
+    dealership: "Dealership — $799/month",
+  };
+  if (user?.subscription_status === "trial") {
+    const end = parseUtcDate(user.trial_ends_at);
+    const daysLeft = end
+      ? Math.max(0, Math.ceil((end - Date.now()) / (1000 * 60 * 60 * 24)))
+      : 0;
+    return `Free Trial — ${daysLeft} day${daysLeft !== 1 ? "s" : ""} left`;
+  }
+  const base = PLANS[user?.purchased_plan] || "Active plan";
+  if (user?.subscription_status === "cancelled") return `${base} (cancelled)`;
+  if (user?.subscription_status === "past_due")  return `${base} (payment due)`;
+  return base;
+}
+
 async function showSettingsScreen() {
   const { user } = await chrome.storage.local.get("user");
   if (user) {
     document.getElementById("settingsEmail").textContent = user.email || "";
     document.getElementById("settingsDealership").textContent = user.dealership_name || "";
     document.getElementById("phoneInput").value = user.phone_number || "";
+    const planEl = document.getElementById("settingsPlanValue");
+    if (planEl) planEl.textContent = planLabel(user);
   }
   showScreen(settingsScreen);
   // Sync language buttons to current state
@@ -1631,7 +1836,7 @@ async function loadQuickLaunchSettings(user) {
     if (url) chrome.tabs.create({ url });
   });
   document.getElementById('upgradeForDealerSiteBtn')?.addEventListener('click', () => {
-    chrome.tabs.create({ url: 'https://dealersorbit.com/billing' });
+    chrome.tabs.create({ url: 'https://dealersorbit.com/#pricing' });
   });
 
   // Request dealer configuration
@@ -3143,7 +3348,7 @@ function renderTrialUsage(sub) {
     </div>`;
 
   document.getElementById("upgradeTrialBtn")?.addEventListener("click", () => {
-    chrome.tabs.create({ url: "https://dealersorbit.com/billing" });
+    openUpgradeModal();
   });
 }
 
@@ -3448,13 +3653,22 @@ closeModal?.addEventListener("click", () => {
 
 // Step 1 — choose type
 document.querySelectorAll(".modal-option").forEach(btn => {
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
     modalSelectedType = btn.dataset.type;
 
     if (modalSelectedType === "photos") {
       generateModal.style.display = "none";
       generateAdWithOptions("photos", "family", null);
     } else if (modalSelectedType === "with_outro") {
+      // Outro (your-face) is an Elite feature. Trial users get it during the
+      // trial; paid Pro users see an upsell. Elite/Dealership pass through.
+      const { user } = await chrome.storage.local.get("user");
+      const isTrialUser = user?.subscription_status === "trial";
+      const hasElite    = user?.purchased_plan === "elite" || user?.purchased_plan === "dealership";
+      if (!isTrialUser && !hasElite) {
+        showOutroUpsellModal();
+        return;
+      }
       modalStep1.style.display = "none";
       modalStepOutro.style.display = "block";
       loadOutroStep();

@@ -616,7 +616,7 @@
       <div class="settings-section-title">Subscription</div>
       <div class="settings-row-item">
         <span>Plan</span>
-        <span class="settings-value">Basic — $99/month</span>
+        <span class="settings-value" id="settingsPlanValue">—</span>
       </div>
       <button id="manageSubscriptionBtn" class="btn-secondary"
         style="display:block;width:100%;text-align:center;margin-top:8px">
@@ -849,6 +849,85 @@
         <a href="mailto:support@dealersorbit.com"
            style="color:#1a56db">support@dealersorbit.com</a>
       </p>
+    </div>
+  </div>
+
+  <!-- Upgrade / plan picker modal -->
+  <div id="upgradeModal" style="
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,0.7);
+    backdrop-filter:blur(4px);
+    z-index:1100;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  ">
+    <div style="
+      background:white;
+      border-radius:16px;
+      padding:24px;
+      max-width:340px;
+      width:100%;
+    ">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <h2 style="font-size:18px;font-weight:700;color:#111827;margin:0">Upgrade DealersOrbit</h2>
+        <button id="upgradeModalCloseBtn" style="
+          background:none;border:none;font-size:18px;color:#9ca3af;
+          cursor:pointer;line-height:1;padding:0;
+        ">✕</button>
+      </div>
+      <p id="upgradeModalSubtitle" style="
+        font-size:13px;color:#6b7280;margin:0 0 18px;line-height:1.5;
+      "></p>
+      <div id="upgradePlansContainer"></div>
+      <div id="upgradeModalError" style="
+        display:none;color:#dc2626;font-size:12px;margin:12px 0 0;
+      "></div>
+      <button id="upgradeProceedBtn" class="btn-primary" style="margin-top:16px">
+        Continue to Payment →
+      </button>
+    </div>
+  </div>
+
+  <!-- Outro upsell (Pro users clicking Slideshow + Outro) -->
+  <div id="outroUpsellModal" style="
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,0.75);
+    z-index:600;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  ">
+    <div style="
+      background:white;
+      border-radius:16px;
+      padding:24px;
+      max-width:320px;
+      width:100%;
+      text-align:center;
+    ">
+      <div style="font-size:40px;margin-bottom:12px">🎥</div>
+      <h3 style="font-size:16px;font-weight:700;color:#111827;margin:0 0 10px">
+        Add Your Face with Elite
+      </h3>
+      <p style="font-size:13px;color:#6b7280;line-height:1.5;margin:0 0 16px">
+        Personal video outros let buyers see and hear from you directly —
+        building trust before they even reach out. Salespeople using outros
+        see more replies and faster responses.
+      </p>
+      <button class="btn-primary" id="upgradeToEliteBtn" style="margin-bottom:8px">
+        Upgrade to Elite — $129/mo →
+      </button>
+      <button id="outroUpsellCloseBtn" style="
+        width:100%;background:none;border:none;
+        color:#9ca3af;font-size:12px;cursor:pointer;padding:4px;
+      ">
+        Maybe later
+      </button>
     </div>
   </div>
 

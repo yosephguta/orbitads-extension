@@ -935,7 +935,7 @@ function createImportButton(vehicleData) {
           : "🔒 Trial limit reached — Upgrade";
         btn.style.background = "#f59e0b";
         btn.title = "Upgrade your DealersOrbit account to keep importing vehicles.";
-        btn.onclick = () => window.open("https://dealersorbit.com/billing", "_blank");
+        btn.onclick = () => window.open("https://dealersorbit.com/#pricing", "_blank");
       } else {
         btn.disabled = false;
         btn.textContent = "⊕ Import to DealersOrbit";

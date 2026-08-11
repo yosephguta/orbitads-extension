@@ -1286,6 +1286,26 @@ body {
   gap: 8px;
 }
 
+/* ── Upgrade plan picker ──────────────────────────────────── */
+.upgrade-plan-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 2px solid #e5e7eb;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-bottom: 10px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.upgrade-plan-option:hover { border-color: #93c5fd; }
+
+.upgrade-plan-option.selected {
+  border-color: #1a56db;
+  background: #eff6ff;
+}
+
 /* ── Unified job card ─────────────────────────────────────── */
 .job-card {
   background: white;

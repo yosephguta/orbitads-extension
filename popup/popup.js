@@ -127,12 +127,15 @@ async function checkSubscriptionStatus() {
       is_blocked:           user.is_blocked || false,
       subscription_message: user.subscription_message || null,
       subscription_status:  user.subscription_status,
+      purchased_plan:       user.purchased_plan || null,
       trial_video_count:    user.trial_video_count || 0,
       trial_ends_at:        user.trial_ends_at || null,
       cached_at:            Date.now(),
     };
 
-    await chrome.storage.local.set({ subscription_cache: cache });
+    // Refresh the stored user too, so plan/entitlement reads (purchased_plan,
+    // subscription_status) reflect Stripe upgrades without requiring a re-login.
+    await chrome.storage.local.set({ subscription_cache: cache, user });
     return cache;
 
   } catch (err) {
@@ -2857,6 +2860,7 @@ async function init() {
         is_blocked:           meData.is_blocked || false,
         subscription_message: meData.subscription_message || null,
         subscription_status:  meData.subscription_status,
+        purchased_plan:       meData.purchased_plan || null,
         trial_video_count:    meData.trial_video_count || 0,
         trial_ends_at:        meData.trial_ends_at || null,
         cached_at:            Date.now(),

@@ -1164,6 +1164,43 @@ async function addCaptionToPost(caption) {
   console.log("DealersOrbit: caption inserted");
 }
 
+// Marketplace description is a <textarea> (React-controlled). Fill it instantly
+// with one execCommand('insertText') — same selectAll/delete + execCommand
+// approach as addCaptionToPost, but insertText (no clipboard dependency) and in
+// a single shot instead of humanType's per-character loop.
+async function fillMarketplaceDescription(description) {
+  const textarea =
+    document.querySelector('textarea[aria-label="Description"]') ||
+    document.querySelector('textarea[name="description"]') ||
+    document.querySelector('textarea');
+
+  if (!textarea) {
+    console.log('DealersOrbit: description field not found');
+    return false;
+  }
+
+  textarea.focus();
+  await sleep(200);
+
+  // Clear any existing content
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  await sleep(50);
+
+  // Instant fill — whole string at once (newlines preserved)
+  document.execCommand('insertText', false, description);
+
+  // Fire the same events humanType ends with so React registers the value
+  textarea.dispatchEvent(new InputEvent('input', {
+    data: description, inputType: 'insertText', bubbles: true,
+  }));
+  textarea.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(200);
+
+  console.log('DealersOrbit: description filled instantly');
+  return true;
+}
+
 /**
  * Fetch a photo and return it as a File object.
  * Tries a direct fetch first (works for CDNs that send permissive CORS headers).
@@ -1631,15 +1668,15 @@ async function tryFacebookAutoFill() {
   await uploadPhotosToFacebook(fb_listing);
   await sleep(2000);
 
-  // ── Step 2: Year ──────────────────────────────────────────
+  // ── Step 2: Vehicle type (MUST come before Make/Model) ────
+  await fillDropdown("Vehicle type", "Car/Truck");
+  await sleep(2000); // wait for Make/Model fields to appear
+
+  // ── Step 3: Year ──────────────────────────────────────────
   if (v.year) {
     await fillDropdown("Year", v.year);
     await sleep(1500);
   }
-
-  // ── Step 3: Vehicle type (MUST come before Make/Model) ────
-  await fillDropdown("Vehicle type", "Car/Truck");
-  await sleep(2000); // wait for Make/Model fields to appear
 
   // ── Step 4: Make ──────────────────────────────────────────
   if (v.make) {
@@ -1756,15 +1793,7 @@ async function tryFacebookAutoFill() {
   await fillDropdown("Body style", bodyStyle || "Other");
   await sleep(1000);
 
-  // ── Step 9: Vehicle condition ─────────────────────────────
-  await fillDropdown("Vehicle condition", "Excellent");
-  await sleep(1000);
-
-  // ── Step 10: Fuel type ────────────────────────────────────
-  await fillDropdown("Fuel type", guessFuelType(v.make || "", v.model || ""));
-  await sleep(1000);
-
-  // ── Step 11: Exterior and Interior color ─────────────────
+  // ── Step 9: Exterior and Interior color ─────────────────
   const exteriorFbColor = mapToFacebookColor(fb_listing.vehicle?.exterior_color);
   const interiorFbColor = mapToFacebookColor(fb_listing.vehicle?.interior_color);
 
@@ -1780,7 +1809,7 @@ async function tryFacebookAutoFill() {
     await sleep(500);
   }
 
-  // ── Step 12: Clean title checkbox ────────────────────────
+  // ── Step 10: Clean title checkbox ────────────────────────
   const cleanTitleCheckbox = document.querySelector(
     'input[type="checkbox"][name="title_status"], ' +
     'input[aria-label="This vehicle has a clean title."]'
@@ -1791,13 +1820,18 @@ async function tryFacebookAutoFill() {
     await sleep(500);
   }
 
-  // ── Step 12: Description ──────────────────────────────────
+  // ── Step 11: Vehicle condition ─────────────────────────────
+  await fillDropdown("Vehicle condition", "Excellent");
   await sleep(1000);
-  const textarea = document.querySelector('textarea');
-  if (textarea && fb_listing.description) {
-    textarea.focus();
-    await sleep(500);
-    await humanType(textarea, fb_listing.description);
+
+  // ── Step 12: Fuel type ────────────────────────────────────
+  await fillDropdown("Fuel type", guessFuelType(v.make || "", v.model || ""));
+  await sleep(1000);
+
+  // ── Step 13: Description ──────────────────────────────────
+  await sleep(1000);
+  if (fb_listing.description) {
+    await fillMarketplaceDescription(fb_listing.description);
   }
 
   showFbAutoFillBanner();
@@ -1823,6 +1857,12 @@ async function fillDropdown(labelText, optionText) {
     console.log(`DealersOrbit: Dropdown "${labelText}" not found`);
     return false;
   }
+
+  // Scroll the field into view so the user can watch each dropdown fill in
+  // (inputs auto-scroll on focus, but comboboxes don't — this keeps the lower
+  // half of the form from filling off-screen and looking frozen).
+  trigger.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  await sleep(400);
 
   trigger.click();
   await sleep(1500); // wait longer for options to load

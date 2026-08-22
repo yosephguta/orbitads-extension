@@ -43,6 +43,9 @@
     </div>
     <div class="error-msg" id="loginError"></div>
     <button class="btn-primary" id="loginBtn">Sign In</button>
+    <p class="screen-hint" style="margin-top:10px">
+      <a href="https://dealersorbit.com/forgot-password" target="_blank">Forgot password?</a>
+    </p>
     <p class="screen-hint">
       Don't have an account?
       <a href="https://dealersorbit.com" target="_blank">Sign up at dealersorbit.com</a>
@@ -452,8 +455,9 @@
           <div id="myVoiceStatus" style="display:none;color:#16a34a;font-size:18px">✓</div>
         </div>
         <div style="font-size:11px;color:#9ca3af;margin-top:4px">
-          Don't have a cloned voice?
-          <a href="https://dealersorbit.com/voice-setup" target="_blank"
+          Want your own cloned voice? Create a free ElevenLabs account,
+          clone your voice, then paste your Voice ID above.
+          <a href="https://elevenlabs.io" target="_blank"
              style="color:#1a56db;text-decoration:none;font-weight:600">
             Create your voice →
           </a>
@@ -626,6 +630,48 @@
 
     <div class="settings-section">
       <button class="btn-danger" id="signOutBtn">Sign Out</button>
+    </div>
+  </div>
+
+  <!-- Help & Support screen -->
+  <div class="screen" id="helpScreen" style="display:none">
+    <div class="review-header">
+      <div class="review-header-top">
+        <button class="btn-back" id="helpBackBtn">← Back</button>
+        <div class="review-title">Help &amp; Support</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <a href="https://dealersorbit.com/help" target="_blank"
+         class="btn-secondary"
+         style="display:block;width:100%;text-align:center;text-decoration:none;box-sizing:border-box">
+        📖 View Full FAQ
+      </a>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Contact Support</div>
+      <form id="supportForm">
+        <div style="margin-bottom:10px">
+          <label for="supportSubjectInput" style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Subject</label>
+          <input type="text" id="supportSubjectInput" required
+                 style="width:100%;font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="margin-bottom:10px">
+          <label for="supportMessageInput" style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Message</label>
+          <textarea id="supportMessageInput" rows="4" required
+                    placeholder="Describe what you need help with..."
+                    style="width:100%;font-size:13px;box-sizing:border-box;resize:vertical"></textarea>
+        </div>
+        <div id="supportSuccess" style="display:none;color:#16a34a;font-size:12px;margin-bottom:10px;font-weight:600">
+          ✓ Message sent! We'll get back to you soon.
+        </div>
+        <div id="supportError" style="display:none;color:#dc2626;font-size:12px;margin-bottom:10px"></div>
+        <button type="submit" class="btn-primary" style="width:100%" id="supportSubmitBtn">
+          Send Message
+        </button>
+      </form>
     </div>
   </div>
 

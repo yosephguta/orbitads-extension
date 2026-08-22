@@ -148,6 +148,27 @@ const API_BASE = IS_DEV
   ? "http://localhost:8000/api/v1"
   : "https://api.dealersorbit.com/api/v1";
 
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
+// Drop-in fetch wrapper for backend calls. Auto-injects the extension version
+// header (so the backend can track version distribution) and the auth token.
+// Takes an ENDPOINT (e.g. "/jobs/"), not a full URL — API_BASE is prepended.
+// Use this for all NEW backend calls; existing raw fetch() calls are unchanged.
+async function apiFetch(endpoint, options = {}) {
+  const { token } = await chrome.storage.local.get("token");
+
+  const headers = {
+    ...(options.headers || {}),
+    "X-Extension-Version": EXTENSION_VERSION,
+  };
+
+  if (token && !headers["Authorization"]) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+}
+
 async function handleExpiredToken() {
   await chrome.storage.local.remove(["token", "user"]);
   await chrome.storage.local.set({ session_expired: true });
@@ -678,6 +699,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'RETRY_ENRICHMENT') {
+    (async () => {
+      // Remove the stale incomplete card so the retry REPLACES it rather than
+      // creating a duplicate (enrichSingleVehicle re-adds with a fresh id and
+      // only dedups by VIN — which the incomplete card was missing).
+      const { pending_review_queue = [] } =
+        await chrome.storage.local.get('pending_review_queue');
+      const filtered = pending_review_queue.filter(
+        i => i.queue_item_id !== message.queue_item_id
+      );
+      await chrome.storage.local.set({ pending_review_queue: filtered });
+
+      // Re-enrich from listing_url (opens a fresh tab), clearing stale flags.
+      const v = { ...message.vehicle };
+      delete v.scrape_incomplete;
+      delete v.scrape_incomplete_reason;
+      await enrichAndQueue(v);
+      sendResponse({ success: true });
+    })().catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   return true;
 });
 
@@ -834,6 +877,49 @@ function isNewCarUrl(url) {
   if (!url) return false;
   const path = new URL(url).pathname.toLowerCase();
   return /\/new[-/]|\/exotic-new\/|\/new-inventory\/|\/new-vehicles\/|\/new-cars\//.test(path);
+}
+
+// A scrape is "complete" when we have the fields an ad actually needs.
+// Used to decide whether a Cars.com scrape should be retried (e.g. after a
+// Cloudflare challenge returned a half-rendered page).
+function isDataComplete(detailData) {
+  return !!(
+    detailData?.vin &&
+    detailData?.price &&
+    Array.isArray(detailData?.photos) &&
+    detailData.photos.length > 0
+  );
+}
+
+// Run an injected extractor and retry once if the result is incomplete
+// (Cloudflare interstitial, LiveView still rendering, etc). Returns the
+// best-effort data even if still incomplete after all attempts.
+async function extractWithRetry(extractFn, tabId, maxAttempts = 2) {
+  let detailData = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func:   extractFn,
+      args:   [],
+    });
+    detailData = results?.[0]?.result;
+
+    if (isDataComplete(detailData)) {
+      if (attempt > 1) {
+        console.log(`DealersOrbit: Scrape succeeded on retry attempt ${attempt}`);
+      }
+      return detailData;
+    }
+
+    if (attempt < maxAttempts) {
+      console.log(`DealersOrbit: Incomplete scrape (attempt ${attempt}), retrying in 2s...`);
+      await sleep(2000);
+    }
+  }
+
+  console.log('DealersOrbit: Scrape still incomplete after retries');
+  return detailData;
 }
 
 async function enrichSingleVehicle(vehicle) {
@@ -997,13 +1083,18 @@ async function enrichSingleVehicle(vehicle) {
       try {
         carsTab = await chrome.tabs.create({ url: vehicle.listing_url, active: false });
         await waitForTabLoad(carsTab.id);
-        const carsResults = await chrome.scripting.executeScript({
-          target: { tabId: carsTab.id },
-          func:   extractCarsDotComVdpDataWithWait,
-          args:   [],
-        });
-        const carsData = carsResults?.[0]?.result;
+        const carsData = await extractWithRetry(extractCarsDotComVdpDataWithWait, carsTab.id);
         console.log(`DealersOrbit: Cars.com VDP data:`, carsData?.photos?.length, 'photos, title:', carsData?.title);
+        if (!isDataComplete(carsData)) {
+          vehicle.scrape_incomplete = true;
+          vehicle.scrape_incomplete_reason =
+            !carsData?.vin   ? 'Missing VIN' :
+            !carsData?.price ? 'Missing price' :
+            'Missing photos';
+          console.warn(`DealersOrbit: Cars.com scrape INCOMPLETE — ${vehicle.scrape_incomplete_reason} (vin=${!!carsData?.vin}, price=${!!carsData?.price}, photos=${carsData?.photos?.length || 0}). Retry available on the card.`);
+        } else {
+          console.log('DealersOrbit: Cars.com scrape complete ✓ (vin + price + photos present)');
+        }
         if (carsData && !carsData._error) {
           vehicle.vin     = carsData.vin     || vehicle.vin;
           vehicle.price   = carsData.price   || vehicle.price;
@@ -1253,16 +1344,20 @@ async function processClassifyQueue() {
   if (isClassifying) return;
   isClassifying = true;
 
-  while (classifyQueue.length > 0) {
-    const { vehicle, queueItemId } = classifyQueue.shift();
-    try {
-      await classifySingleVehicle(vehicle, queueItemId);
-    } catch (err) {
-      console.error("DealersOrbit: Classification failed for", vehicle.model, err);
+  try {
+    while (classifyQueue.length > 0) {
+      const { vehicle, queueItemId } = classifyQueue.shift();
+      try {
+        await classifySingleVehicle(vehicle, queueItemId);
+      } catch (err) {
+        console.error("DealersOrbit: Classification failed for", vehicle.model, err);
+      }
     }
+  } finally {
+    // Always release the lock — otherwise one unexpected error jams every
+    // subsequent classification (the early `if (isClassifying) return`).
+    isClassifying = false;
   }
-
-  isClassifying = false;
 }
 
 async function classifySingleVehicle(vehicle, queueItemId) {
@@ -1283,6 +1378,10 @@ async function classifySingleVehicle(vehicle, queueItemId) {
   const { token } = await chrome.storage.local.get("token");
   if (!token) return;
 
+  // Guard the classify request with a timeout — a stalled fetch would otherwise
+  // hang processClassifyQueue forever and silently jam every later classification.
+  const controller = new AbortController();
+  const timeoutId  = setTimeout(() => controller.abort(), 45000);
   try {
     const resp = await fetch(`${API_BASE}/photos/classify`, {
       method: "POST",
@@ -1291,6 +1390,7 @@ async function classifySingleVehicle(vehicle, queueItemId) {
         "Authorization": `Bearer ${token}`,
       },
       body: JSON.stringify({ photo_urls: photosToClassify }),
+      signal: controller.signal,
     });
 
     if (resp.status === 401) { await handleExpiredToken(); return; }
@@ -1332,6 +1432,8 @@ async function classifySingleVehicle(vehicle, queueItemId) {
 
   } catch (err) {
     console.error("DealersOrbit: classifySingleVehicle failed:", err);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -1469,6 +1571,21 @@ async function extractCarGurusVdpDataWithWait() {
  * Must be self-contained — no closure references.
  */
 async function extractCarsDotComVdpDataWithWait() {
+  // Cars.com sometimes shows a Cloudflare "Just a moment..." interstitial for
+  // ~3s before the real VDP renders. Wait for it to clear so we don't scrape
+  // the challenge page. Self-contained (this fn is injected into the page).
+  async function waitForCloudflareChallenge(maxWaitMs = 10000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (!document.title.includes('Just a moment')) return true;
+      console.log('DealersOrbit: Cloudflare check in progress, waiting...');
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log('DealersOrbit: Cloudflare check did not clear within timeout');
+    return false;
+  }
+  await waitForCloudflareChallenge();
+
   // Poll up to 15s for the LiveView content to render
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
@@ -1529,7 +1646,21 @@ async function extractCarsDotComVdpDataWithWait() {
  * Avoids the generic img scan and mileage-block problems on Cars.com pages.
  * Must be self-contained (no closure references).
  */
-function extractCarsDotComVdpData() {
+async function extractCarsDotComVdpData() {
+  // Wait out the Cloudflare "Just a moment..." interstitial if present, so we
+  // don't scrape the challenge page. Self-contained (injected into the page).
+  async function waitForCloudflareChallenge(maxWaitMs = 10000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (!document.title.includes('Just a moment')) return true;
+      console.log('DealersOrbit: Cloudflare check in progress, waiting...');
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log('DealersOrbit: Cloudflare check did not clear within timeout');
+    return false;
+  }
+  await waitForCloudflareChallenge();
+
   // ── Title ─────────────────────────────────────────────────
   const title = document.querySelector('h1')?.innerText?.trim() || document.title || '';
 

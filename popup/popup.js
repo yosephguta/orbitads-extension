@@ -20,6 +20,8 @@ const API_BASE = IS_DEV
   ? "http://localhost:8000/api/v1"
   : "https://api.dealersorbit.com/api/v1";
 
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
 // ── Elements ──────────────────────────────────────────────────
 const dashboardScreen = document.getElementById("dashboardScreen");
 const reviewQueueContainer = document.getElementById("reviewQueueCards") || document.createElement("div"); const settingsScreen = document.getElementById("settingsScreen");
@@ -91,9 +93,16 @@ async function handleSessionExpired() {
 }
 
 // Drop-in replacement for fetch() on authenticated calls.
-// Intercepts 401 responses and logs the user out automatically.
+// Intercepts 401 responses and logs the user out automatically, and
+// auto-injects the X-Extension-Version header so the backend can track
+// which extension version each user is running. Takes a full URL (callers
+// pass `${API_BASE}/...`), matching the existing call-site convention.
 async function apiFetch(url, options = {}) {
-  const resp = await fetch(url, options);
+  const headers = {
+    ...(options.headers || {}),
+    "X-Extension-Version": EXTENSION_VERSION,
+  };
+  const resp = await fetch(url, { ...options, headers });
   if (resp.status === 401) {
     await handleSessionExpired();
     throw new Error("session_expired");
@@ -435,6 +444,27 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     return;
   }
 
+  // Retry a Cars.com import that came back incomplete
+  const retryBtn = e.target.closest(".retry-import-btn");
+  if (retryBtn) {
+    e.stopPropagation();
+    const queueItemId = retryBtn.dataset.queueItemId;
+
+    const { pending_review_queue = [] } =
+      await chrome.storage.local.get("pending_review_queue");
+    const item = pending_review_queue.find(i => i.queue_item_id === queueItemId);
+    if (!item) return;
+
+    retryBtn.textContent = "Retrying...";
+    retryBtn.disabled = true;
+    chrome.runtime.sendMessage({
+      type: "RETRY_ENRICHMENT",
+      vehicle: item.vehicle,
+      queue_item_id: queueItemId,
+    });
+    return;
+  }
+
   // Generate Ad button
   const generateBtn = e.target.closest(".generate-btn");
   if (generateBtn && !generateBtn.disabled) {
@@ -608,7 +638,52 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
 
 settingsBackBtn?.addEventListener("click", () => showScreen(dashboardScreen));
 helpBtn?.addEventListener("click", () => {
-  chrome.tabs.create({ url: "https://dealersorbit.com/help" });
+  showScreen(helpScreen);
+});
+document.getElementById("helpBackBtn")?.addEventListener("click", () => {
+  showScreen(dashboardScreen);
+});
+
+document.getElementById("supportForm")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const btn = document.getElementById("supportSubmitBtn");
+  const errorEl = document.getElementById("supportError");
+  const successEl = document.getElementById("supportSuccess");
+
+  btn.textContent = "Sending...";
+  btn.disabled = true;
+  errorEl.style.display = "none";
+  successEl.style.display = "none";
+
+  try {
+    const { token } = await chrome.storage.local.get("token");
+    const resp = await apiFetch(`${API_BASE}/auth/support/contact`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        subject: document.getElementById("supportSubjectInput").value,
+        message: document.getElementById("supportMessageInput").value,
+      }),
+    });
+
+    if (!resp.ok) throw new Error("Failed to send");
+
+    successEl.style.display = "block";
+    document.getElementById("supportForm").reset();
+    btn.textContent = "Send Message";
+    btn.disabled = false;
+
+  } catch (err) {
+    if (err.message === "session_expired") return;
+    errorEl.textContent = "Failed to send. Please email mail@dealersorbit.com directly.";
+    errorEl.style.display = "block";
+    btn.textContent = "Send Message";
+    btn.disabled = false;
+  }
 });
 siteBtn?.addEventListener("click", () => {
   chrome.tabs.create({ url: "https://dealersorbit.com" });
@@ -2220,6 +2295,21 @@ async function loadOutroSettings() {
   }
 }
 
+// Read a video file's real duration (seconds) via a hidden <video> element.
+// Resolves null if the browser can't read the metadata.
+function getVideoDuration(file) {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(video.src);
+      resolve(video.duration);
+    };
+    video.onerror = () => resolve(null);
+    video.src = URL.createObjectURL(file);
+  });
+}
+
 document.getElementById("uploadOutroBtn")?.addEventListener("click", async () => {
   const fileInput = document.getElementById("outroFileInput");
   const nameInput = document.getElementById("outroNameInput");
@@ -2242,6 +2332,26 @@ document.getElementById("uploadOutroBtn")?.addEventListener("click", async () =>
     return;
   }
 
+  // Measure the real duration before uploading so the backend stores the
+  // actual length (fixes outros getting cut off by the hardcoded fallback).
+  const duration = await getVideoDuration(file);
+
+  if (duration && duration > 20) {
+    statusEl.style.display = "block";
+    statusEl.style.color = "#dc2626";
+    statusEl.textContent =
+      "Your outro video is too long. Please keep it under 10 seconds (max 20).";
+    return;
+  }
+
+  if (duration && duration > 10) {
+    const proceed = confirm(
+      `Your outro is ${Math.round(duration)}s. We recommend keeping it under ` +
+      `10 seconds for best results. Continue anyway?`
+    );
+    if (!proceed) return;
+  }
+
   btn.textContent = "Uploading...";
   btn.disabled = true;
   statusEl.style.display = "none";
@@ -2251,6 +2361,7 @@ document.getElementById("uploadOutroBtn")?.addEventListener("click", async () =>
     const formData = new FormData();
     formData.append("file", file);
     formData.append("name", name);
+    if (duration) formData.append("duration_seconds", String(duration));
 
     const resp = await apiFetch(`${API_BASE}/outros/upload`, {
       method: "POST",
@@ -2884,10 +2995,33 @@ async function init() {
 
     renderQueue();
     await restartPollingIfNeeded();
+    await restartClassifyingIfNeeded();
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
   } else {
     showScreen(loginScreen);
+  }
+}
+
+// Self-heal stuck "classifying" cards. The MV3 service worker can be evicted
+// mid-classification (in-memory classifyQueue is lost), leaving a card stuck
+// forever. On popup open, re-trigger classification for any pending_review item
+// that's still unclassified and older than 90s (in-progress ones finish in a
+// few seconds, so the age guard avoids double-classifying live requests).
+async function restartClassifyingIfNeeded() {
+  const { pending_review_queue = [] } =
+    await chrome.storage.local.get('pending_review_queue');
+  const now = Date.now();
+  for (const item of pending_review_queue) {
+    if (item.classified || !item.vehicle) continue;
+    const started = Number(item.queue_item_id) || 0;
+    if (started && now - started < 90000) continue;  // give live classifications time
+    console.log('DealersOrbit: re-triggering stalled classification for', item.vehicle.model);
+    chrome.runtime.sendMessage({
+      type: 'CLASSIFY_PENDING',
+      vehicle: item.vehicle,
+      queue_item_id: item.queue_item_id,
+    });
   }
 }
 
@@ -3010,8 +3144,10 @@ function showFbListingScreen(listing, vehicle) {
 
 
 // ── Screen management ─────────────────────────────────────────
+const helpScreen = document.getElementById("helpScreen");
+
 function showScreen(screen) {
-  [loginScreen, dashboardScreen, reviewScreen, fbListingScreen, settingsScreen]
+  [loginScreen, dashboardScreen, reviewScreen, fbListingScreen, settingsScreen, helpScreen]
     .forEach(s => { if (s) s.style.display = "none"; });
   if (screen) screen.style.display = "block";
 }
@@ -3360,6 +3496,7 @@ async function renderQueue() {
   if (reviewScreen?.style.display !== "none") return;
   if (fbListingScreen?.style.display !== "none") return;
   if (settingsScreen?.style.display !== "none") return;
+  if (helpScreen?.style.display !== "none") return;
   if (generateModal?.style.display !== "none") return;
 
   // Block dashboard if subscription is expired
@@ -3467,6 +3604,22 @@ function renderUnifiedCard(card) {
   const title = vehicleTitle(v);
   const meta = [v.mileage, v.vin ? `VIN: ${v.vin}` : null]
     .filter(Boolean).join(" · ");
+
+  // Cars.com scrape came back incomplete (e.g. Cloudflare interstitial) —
+  // surface a retry so the user can re-import without starting over.
+  let scrapeWarning = "";
+  if (v.scrape_incomplete && card.type === "review") {
+    scrapeWarning = `
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;
+                  padding:8px 10px;margin-top:6px;font-size:11px;color:#92400e">
+        ⚠️ Some info couldn't be loaded (${v.scrape_incomplete_reason || "incomplete data"}).
+        <button class="retry-import-btn" data-queue-item-id="${card.item?.queue_item_id || ""}"
+                style="background:none;border:none;color:#1a56db;font-weight:700;
+                       cursor:pointer;text-decoration:underline;padding:0;margin-left:4px">
+          Retry Import
+        </button>
+      </div>`;
+  }
 
   let badgeClass = "badge-waiting";
   let badgeText = "Waiting";
@@ -3583,6 +3736,7 @@ function renderUnifiedCard(card) {
       </div>
       ${meta ? `<div class="job-meta">${meta}</div>` : ""}
       ${v.price ? `<div class="job-price">${v.price}</div>` : ""}
+      ${scrapeWarning}
       ${progressBar}
       ${actionBtn}
     </div>`;

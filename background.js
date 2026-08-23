@@ -830,6 +830,14 @@ const enrichQueue = [];
 // Track which job IDs already have an active resumePolling loop
 const resumingJobIds = new Set();
 
+// Mutex for the generation queue. processQueue() is entered from several
+// places (addToQueue, RESTART_POLLING, the post-job recursion, resumePolling
+// completion); without this, two entries could both pick the same `waiting`
+// job before either persists `generating` and submit it TWICE (two backend
+// jobs → two pipelines → duplicate Shotstack renders). Set synchronously
+// before any await, so it's airtight in single-threaded JS.
+let isProcessingQueue = false;
+
 let isClassifying = false;
 const classifyQueue = [];
 
@@ -2239,41 +2247,63 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
 }
 
 async function processQueue() {
-  const { queue = [] } = await chrome.storage.local.get("queue");
+  let job = null;
+  let queue = null;
 
-  // If a job is in generating state with an api_job_id, the service worker
-  // may have restarted mid-poll — resume polling instead of starting a new job.
-  const generatingJob = queue.find(j => j.status === "generating");
-  if (generatingJob) {
-    if (generatingJob.api_job_id) {
-      console.log('DealersOrbit: Resuming poll for job', generatingJob.id);
-      resumePolling(generatingJob, queue);
-    }
+  // ── Claim step (mutex-guarded) ────────────────────────────────
+  // The mutex covers ONLY claiming the next job: find a waiting job, mark it
+  // `generating`, and persist. Set synchronously before any await, so two
+  // concurrent entries can't both claim the same job (which caused duplicate
+  // submits → duplicate renders). It is released BEFORE the long poll, so a
+  // stalled/slow job never holds the lock and blocks the rest of the queue.
+  if (isProcessingQueue) {
+    console.log('DealersOrbit: processQueue claim in progress — skipping re-entry');
     return;
   }
-
-  const nextJob = queue.find(j => j.status === "waiting");
-  if (!nextJob) return;
-
-  nextJob.status = "generating";
-  await saveQueue(queue);
-
-  console.log(`DealersOrbit: Processing — ${nextJob.vehicle.year} ${nextJob.vehicle.make} ${nextJob.vehicle.model}`);
-
+  isProcessingQueue = true;
   try {
-    await realProcessing(nextJob, queue);
-    if (nextJob.status !== "completed") {
-      nextJob.status = "completed";
-      nextJob.progress = 100;
-      nextJob.label = "Complete!";
+    const r = await chrome.storage.local.get("queue");
+    queue = r.queue || [];
+
+    // A job is already mid-flight (serial queue — one at a time). Make sure it's
+    // being polled (resumePolling no-ops if realProcessing/resume already is via
+    // resumingJobIds), then stop — do NOT start another.
+    const generatingJob = queue.find(j => j.status === "generating");
+    if (generatingJob) {
+      if (generatingJob.api_job_id) resumePolling(generatingJob, queue);
+      return;
+    }
+
+    job = queue.find(j => j.status === "waiting");
+    if (!job) return;
+
+    job.status = "generating";
+    await saveQueue(queue);
+    console.log(`DealersOrbit: Processing — ${job.vehicle.year} ${job.vehicle.make} ${job.vehicle.model}`);
+  } finally {
+    isProcessingQueue = false;
+  }
+
+  // ── Submit + poll (OUTSIDE the mutex) ─────────────────────────
+  // Registered in resumingJobIds so a concurrent resumePolling for the same job
+  // no-ops (prevents a second poller → second continuation → double-start).
+  resumingJobIds.add(job.id);
+  try {
+    await realProcessing(job, queue);
+    if (job.status !== "completed") {
+      job.status = "completed";
+      job.progress = 100;
+      job.label = "Complete!";
     }
   } catch (err) {
-    nextJob.status = "failed";
-    nextJob.error = err.message;
+    job.status = "failed";
+    job.error = err.message;
+  } finally {
+    resumingJobIds.delete(job.id);
   }
 
   await saveQueue(queue);
-  processQueue();
+  processQueue();  // continue with the next waiting job
 }
 
 async function saveToListingHistory(job, apiJob, token) {

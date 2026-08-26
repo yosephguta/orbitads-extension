@@ -1164,6 +1164,47 @@ async function addCaptionToPost(caption) {
   console.log("DealersOrbit: caption inserted");
 }
 
+// A group feed page can contain MULTIPLE data-lexical-editor elements (the
+// collapsed "Write something" box in the feed PLUS the opened composer), so the
+// generic first-match querySelector in addCaptionToPost often targets the wrong
+// (hidden) one — the reason group captions never landed while regular posts did.
+// Target the VISIBLE active composer (prefer the one whose placeholder mentions
+// a post, else the last visible editor), keep the real-clipboard paste that
+// preserves line breaks, and fall back to insertText if paste doesn't land.
+async function fillGroupCaption(caption) {
+  const editors = Array.from(
+    document.querySelectorAll('div[contenteditable="true"][data-lexical-editor="true"]')
+  );
+  const isVisible = el => el.offsetParent !== null && el.getClientRects().length > 0;
+  const visible = editors.filter(isVisible);
+  const editor =
+    visible.find(el => /post/i.test(el.getAttribute('aria-placeholder') || '')) ||
+    visible[visible.length - 1] ||
+    editors[editors.length - 1];
+
+  if (!editor) throw new Error('DealersOrbit: group caption editor not found');
+
+  editor.focus();
+  await sleep(300);
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  await sleep(100);
+
+  // Primary: paste the real clipboard (the popup wrote the caption there) —
+  // Lexical preserves newlines as paragraphs on a real paste.
+  document.execCommand('paste', false, null);
+  await sleep(500);
+
+  // Fallback: some group composers block programmatic paste — insert directly.
+  if (!(editor.textContent || '').trim()) {
+    editor.focus();
+    document.execCommand('insertText', false, caption);
+    await sleep(400);
+  }
+
+  console.log('DealersOrbit: group caption len =', (editor.textContent || '').length);
+}
+
 // Marketplace description is a <textarea> (React-controlled). Fill it instantly
 // with one execCommand('insertText') — same selectAll/delete + execCommand
 // approach as addCaptionToPost, but insertText (no clipboard dependency) and in
@@ -1618,12 +1659,18 @@ async function tryFacebookGroupsFlow() {
 
     await sleep(2000);
 
-    updateBanner('👥 DealersOrbit: Adding caption...');
-    await addCaptionToPost(fb_groups_post.caption);
-    await sleep(500);
-
+    // Upload media FIRST, caption LAST — mirrors the working FB Post flow.
+    // uploadFilesToPost does a two-pass video upload that re-renders the group
+    // composer; a caption typed BEFORE that gets wiped by the re-render. Adding
+    // it after the composer has settled makes it stick (photos/video already
+    // worked here, so upload order is safe).
     updateBanner('👥 DealersOrbit: Uploading photos & video...');
     await uploadFilesToPost(fb_groups_post.photos, fb_groups_post.video_url);
+    await sleep(800);
+
+    updateBanner('👥 DealersOrbit: Adding caption...');
+    await fillGroupCaption(fb_groups_post.caption);
+    await sleep(500);
 
     updateBanner('✅ Ready! Click Add Groups to share to more groups, then click Post.', 'success');
     await scrollToAddGroupsButton();

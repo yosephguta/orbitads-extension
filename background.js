@@ -2349,7 +2349,7 @@ async function resumePolling(job, queue) {
     return;
   }
 
-  const POLL_INTERVAL = 8000;
+  const POLL_INTERVAL = 5000;   // 5s — snappier pickup of completed jobs
   const MAX_WAIT      = 1200000; // 20 minutes
   let elapsed         = 0;
 
@@ -2493,7 +2493,7 @@ async function realProcessing(job, queue) {
   await saveQueue(queue);
 
   // ── Poll until complete ──────────────────────────────────
-  const POLL_INTERVAL = 8000;   // 8 seconds
+  const POLL_INTERVAL = 5000;   // 5 seconds
   const MAX_WAIT = 600000; // 10 minutes
   let elapsed = 0;
 

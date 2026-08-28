@@ -1530,7 +1530,13 @@ async function tryFacebookPostFlow() {
     await addCaptionToPost(fb_post.caption);
 
     await chrome.storage.local.remove("fb_post");
-    chrome.runtime.sendMessage({ type: "FB_POST_COMPLETE", job_id: fb_post.job_id });
+    // vehicle MUST be included — the FB_POST_COMPLETE handler only records the
+    // posted_fb_post event when message.vehicle is present.
+    chrome.runtime.sendMessage({
+      type: "FB_POST_COMPLETE",
+      job_id: fb_post.job_id,
+      vehicle: fb_post.vehicle,
+    });
     chrome.runtime.sendMessage({
       type: "MARK_LISTING_POSTED",
       vehicle: fb_post.vehicle,
@@ -1677,7 +1683,13 @@ async function tryFacebookGroupsFlow() {
     setTimeout(() => document.querySelector('.dealersorbit-post-banner')?.remove(), 6000);
 
     await chrome.storage.local.remove('fb_groups_post');
-    chrome.runtime.sendMessage({ type: 'FB_GROUPS_POST_COMPLETE' });
+    // vehicle MUST be included — the FB_GROUPS_POST_COMPLETE handler only records
+    // the posted_fb_groups event when message.vehicle is present.
+    chrome.runtime.sendMessage({
+      type: 'FB_GROUPS_POST_COMPLETE',
+      vehicle: fb_groups_post.vehicle,
+      groups_count: fb_groups_post.groups_count || 0,
+    });
     chrome.runtime.sendMessage({
       type: 'MARK_LISTING_POSTED',
       vehicle: fb_groups_post.vehicle,
@@ -1881,8 +1893,25 @@ async function tryFacebookAutoFill() {
     await fillMarketplaceDescription(fb_listing.description);
   }
 
-  showFbAutoFillBanner();
-  console.log("DealersOrbit: Form fill complete.");
+  // Form-fill done. Fire IMMEDIATELY — no manual "I've Posted" gate (matches the
+  // FB Post / FB Groups flows). Two independent messages:
+  //  1) MARK_LISTING_POSTED  → register the sold-check (VIN-deduped, idempotent)
+  //  2) MARKETPLACE_POST_COMPLETE → record the posted_marketplace event (always)
+  chrome.runtime.sendMessage({
+    type: "MARK_LISTING_POSTED",
+    vehicle: v,
+    listing_url: v?.listing_url,
+  });
+  chrome.runtime.sendMessage({
+    type: "MARKETPLACE_POST_COMPLETE",
+    vehicle: v,
+  });
+  // Clear the payload so a page refresh within the 10-min window can't re-fire
+  // the fill/record (mirrors fb_post / fb_groups_post cleanup in the other flows).
+  await chrome.storage.local.remove("fb_listing");
+
+  showFbAutoFillToast();
+  console.log("DealersOrbit: Form fill complete — posting recorded.");
 }
 
 // ── Exterior/Interior color ────────────────────────────────
@@ -2237,8 +2266,11 @@ async function waitForElement(selector, timeout = 10000) {
   return null;
 }
 
-function showFbAutoFillBanner() {
-  // Remove existing banner if any
+// Non-blocking, auto-dismissing confirmation toast shown once the Marketplace
+// form-fill completes. This REPLACES the old "I've Posted ✓" popup — the posting
+// record now fires automatically at form-fill completion (see tryFacebookAutoFill),
+// so there's no button to wait on. Purely informational; sends no messages.
+function showFbAutoFillToast() {
   document.querySelector(".dealersorbit-fb-banner")?.remove();
 
   const banner = document.createElement("div");
@@ -2247,7 +2279,7 @@ function showFbAutoFillBanner() {
     position: fixed;
     top: 20px;
     right: 20px;
-    background: #1877f2;
+    background: #16a34a;
     color: white;
     padding: 16px 20px;
     border-radius: 8px;
@@ -2262,54 +2294,11 @@ function showFbAutoFillBanner() {
   banner.innerHTML = `
   ✓ <strong>DealersOrbit filled your listing!</strong><br>
   <span style="font-weight:400;font-size:13px">
-    ⏳ Wait 30 seconds for video to process, then review and click <strong>Next</strong>.
-  </span>
-    <div style="margin-top:8px">
-      <button id="dealersorbit-confirm-post" style="
-        background:white;color:#1877f2;border:none;
-        padding:6px 12px;border-radius:4px;font-weight:700;
-        cursor:pointer;font-size:12px;margin-right:8px
-      ">I've Posted ✓</button>
-      <button id="dealersorbit-dismiss" style="
-        background:transparent;color:white;border:1px solid rgba(255,255,255,0.5);
-        padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px
-      ">Dismiss</button>
-    </div>
-  `;
+    Review the details, then click <strong>Next</strong> / <strong>Publish</strong> to post.
+  </span>`;
 
   document.body.appendChild(banner);
-
-  // "I've Posted" button — confirms posting and processes next queue item
-  document.getElementById("dealersorbit-confirm-post")?.addEventListener("click", async () => {
-    const { fb_listing } = await chrome.storage.local.get("fb_listing");
-
-    if (fb_listing?.queue_item_id) {
-      // Confirm posting in background queue
-      chrome.runtime.sendMessage({
-        type: "FB_POSTED_CONFIRM",
-        listing_id: fb_listing.queue_item_id,
-      });
-    }
-
-    // Mark listing as posted in backend + save listing_url
-    chrome.runtime.sendMessage({
-      type: "MARK_LISTING_POSTED",
-      vehicle: fb_listing?.vehicle,
-      listing_url: fb_listing?.vehicle?.listing_url,
-    });
-
-    banner.remove();
-    const success = document.createElement("div");
-    success.style.cssText = banner.style.cssText;
-    success.style.background = "#16a34a";
-    success.textContent = "✓ Posted! Next listing will open in 7-12 minutes.";
-    document.body.appendChild(success);
-    setTimeout(() => success.remove(), 4000);
-  });
-
-  document.getElementById("dealersorbit-dismiss")?.addEventListener("click", () => {
-    banner.remove();
-  });
+  setTimeout(() => banner.remove(), 12000);
 }
 
 function setNativeValue(element, value) {

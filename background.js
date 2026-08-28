@@ -556,6 +556,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Records the Marketplace posting EVENT (posted_marketplace) via /track-posting —
+  // mirrors FB_POST_COMPLETE / FB_GROUPS_POST_COMPLETE for the other two channels.
+  // Sold-check registration is handled separately by MARK_LISTING_POSTED, so this
+  // fires every time a marketplace form-fill completes, independent of dedup.
+  if (message.type === "MARKETPLACE_POST_COMPLETE") {
+    (async () => {
+      const { token } = await chrome.storage.local.get("token");
+      if (token && message.vehicle) {
+        fetch(`${API_BASE}/listings/track-posting`, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({
+            event_type:    "posted_marketplace",
+            vin:           message.vehicle.vin,
+            vehicle_year:  message.vehicle.year,
+            vehicle_make:  message.vehicle.make,
+            vehicle_model: message.vehicle.model,
+            vehicle_price: message.vehicle.price,
+          }),
+        }).catch(e => console.log("Analytics tracking failed:", e));
+      }
+    })();
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (message.type === "FETCH_FILES") {
     (async () => {
       const results = [];
@@ -599,6 +625,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
           body: JSON.stringify({
             event_type:    "posted_fb_post",
+            vin:           message.vehicle.vin,
             vehicle_year:  message.vehicle.year,
             vehicle_make:  message.vehicle.make,
             vehicle_model: message.vehicle.model,
@@ -628,6 +655,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
           body: JSON.stringify({
             event_type:    "posted_fb_groups",
+            vin:           message.vehicle.vin,
             groups_count:  message.groups_count || 0,
             vehicle_year:  message.vehicle.year,
             vehicle_make:  message.vehicle.make,
@@ -1924,12 +1952,25 @@ function waitForTabLoad(tabId) {
   });
 }
 
+// Registers a vehicle's listing for sold-checking (sets fb_posted). This is the
+// SOLD-CHECK REGISTRATION step only — the per-channel posting EVENT is recorded
+// separately (MARKETPLACE_POST_COMPLETE / FB_POST_COMPLETE / FB_GROUPS_POST_COMPLETE
+// → /track-posting), so this is safe to call from all three flows without
+// double-logging a marketplace event.
+//
+// Dedup is by VIN: the listing is matched by VIN (the row was created at import,
+// which is also where its dealer-VDP listing_url — the URL the sold-checker
+// actually hits — was set). If that listing is already fb_posted, we SKIP — the
+// existing sold-check entry keeps getting checked; we don't create a second one,
+// no matter how many channels the vehicle is posted to. `listingUrl` (the current
+// page's URL) is intentionally NOT written to the listing: the dealer VDP captured
+// at import always wins as the check target.
 async function markListingPosted(vehicle, listingUrl) {
   const { token } = await chrome.storage.local.get("token");
-  if (!token || !listingUrl) return;
+  if (!token) return;
 
   try {
-    // Find the listing in backend by VIN
+    // Find the listing in backend by VIN (fall back to year/make/model).
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
       headers: { "Authorization": `Bearer ${token}` },
     });
@@ -1937,20 +1978,58 @@ async function markListingPosted(vehicle, listingUrl) {
     if (!listingsResp.ok) return;
 
     const listings = await listingsResp.json();
-    const match = listings.find(l =>
+    let match = listings.find(l =>
       (vehicle?.vin && l.vin === vehicle.vin) ||
       (l.make === vehicle?.make && l.model === vehicle?.model && l.year === vehicle?.year)
     );
 
-    if (match) {
-      await fetch(`${API_BASE}/listings/${match.id}/posted`, {
-        method: "PATCH",
-        headers: { "Authorization": `Bearer ${token}` },
-      });
-      console.log(`DealersOrbit: Marked listing ${match.id} as posted, URL: ${listingUrl}`);
+    // VIN dedup: already registered → skip, the existing entry keeps being checked.
+    if (match && match.fb_posted) {
+      console.log(`DealersOrbit: Sold-check already registered for VIN ${match.vin || vehicle?.vin} (listing ${match.id}) — skipping`);
+      return;
     }
+
+    // No backing listing yet — this happens for photos-only ads (they never hit
+    // the video pipeline that calls saveToListingHistory). Create one now so the
+    // posted vehicle is sold-checkable and shows up in Check Sold. Keyed by VIN,
+    // storing the dealer-VDP listing_url that the sold-checker will actually hit.
+    const soldCheckUrl = listingUrl || vehicle?.listing_url || null;
+    if (!match) {
+      if (!soldCheckUrl) {
+        console.log(`DealersOrbit: No listing and no listing_url for VIN ${vehicle?.vin || 'n/a'} — cannot register sold-check`);
+        return;
+      }
+      const createResp = await fetch(`${API_BASE}/listings/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({
+          vin:         vehicle?.vin || null,
+          year:        vehicle?.year || null,
+          make:        vehicle?.make || null,
+          model:       vehicle?.model || null,
+          trim:        vehicle?.trim || null,
+          price:       vehicle?.price || null,
+          mileage:     vehicle?.mileage || null,
+          listing_url: soldCheckUrl,
+        }),
+      });
+      if (!createResp.ok) {
+        console.log(`DealersOrbit: Failed to create listing for sold-check (VIN ${vehicle?.vin || 'n/a'}): ${createResp.status}`);
+        return;
+      }
+      match = await createResp.json();
+      console.log(`DealersOrbit: Created listing ${match.id} for sold-check (VIN ${match.vin || vehicle?.vin})`);
+    }
+
+    // record_event=false: this call ONLY registers the sold-check (fb_posted). The
+    // channel event is logged via /track-posting by the *_POST_COMPLETE handlers.
+    await fetch(`${API_BASE}/listings/${match.id}/posted?record_event=false`, {
+      method: "PATCH",
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    console.log(`DealersOrbit: Registered listing ${match.id} for sold-check (VIN ${match.vin || vehicle?.vin})`);
   } catch (err) {
-    console.error("DealersOrbit: Failed to mark listing posted:", err);
+    console.error("DealersOrbit: Failed to register listing for sold-check:", err);
   }
 }
 

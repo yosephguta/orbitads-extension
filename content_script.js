@@ -1333,25 +1333,56 @@ async function uploadFilesToPost(photos, videoUrl) {
       }, 300);
     });
 
-    // Wait for Facebook to finish processing the video.
-    // Facebook shows a "Processing video…" or spinner on the thumbnail while it works.
-    // We watch for a <video> element to appear inside the dialog (thumbnail ready)
-    // and for any "processing" text to disappear. Cap at 45s.
+    // Wait for Facebook to finish processing the video, THEN inject photos.
+    // Signal = a <video> element appears in the dialog (thumbnail rendered) with
+    // no active upload spinner/progressbar, stable across two polls.
+    // NOTE: do NOT gate on a broad innerText.includes('processing') — the Post/
+    // Groups composer keeps the word "processing" in persistent chrome/help text,
+    // so that check never clears and we'd wait the full 45s deadline every time
+    // (Marketplace uses a different flow, so it wasn't affected). See the FB gap fix.
     console.log('DealersOrbit: Waiting for Facebook to finish processing video...');
+    // Proceed as soon as the <video> element is embedded (that's FB signalling the
+    // upload is done enough to add more media), then a short fixed settle. Do NOT
+    // gate on "processing" text or a progressbar/aria-busy — those persist in the
+    // Post/Groups composer and made us wait the full 45s every time. The <video>
+    // presence is the reliable signal; 45s is only a fallback if it never appears.
+    const _waitStart = Date.now();
     await new Promise((resolve) => {
       const deadline = Date.now() + 45000;
+      let stable = 0;
+      let ticks = 0;
       const check = setInterval(() => {
-        const dialog = document.querySelector('[role="dialog"]');
-        const ctx    = dialog || document;
-        const videoEl        = ctx.querySelector('video');
-        const stillProcessing = ctx.innerText?.toLowerCase().includes('processing');
-        if ((videoEl && !stillProcessing) || Date.now() > deadline) {
-          clearInterval(check);
-          resolve();
+        ticks += 1;
+        // FB renders the uploaded video's <video> OUTSIDE [role="dialog"], so scan
+        // the whole page. The uploaded preview uses a blob:/mediastream: source
+        // (feed videos use https), which distinguishes it from unrelated page videos.
+        const vids = Array.from(document.querySelectorAll('video'));
+        const uploaded = vids.find(v => {
+          const s = v.currentSrc || v.src || '';
+          return s.startsWith('blob:') || s.startsWith('mediastream:');
+        });
+        const elapsed = Math.round((Date.now() - _waitStart) / 1000);
+        if (ticks % 4 === 0 || uploaded) {
+          const srcs = vids.map(v => (v.currentSrc || v.src || '(no src)').slice(0, 28)).join(' | ');
+          console.log(`DealersOrbit [vid-wait] ${elapsed}s: videos=${vids.length} uploaded=${!!uploaded} srcs=[${srcs}]`);
         }
-      }, 1000);
+        if (uploaded) {
+          stable += 1;
+          if (stable >= 2) {
+            console.log(`DealersOrbit [vid-wait] proceeding after ${elapsed}s (uploaded video ready)`);
+            clearInterval(check); resolve();
+          }
+        } else {
+          stable = 0;
+        }
+        if (Date.now() > deadline) {
+          const srcs = vids.map(v => (v.currentSrc || v.src || '(no src)').slice(0, 40)).join(' | ');
+          console.log(`DealersOrbit [vid-wait] HIT 45s DEADLINE — no blob/mediastream video found. videos=${vids.length} srcs=[${srcs}] — paste this back.`);
+          clearInterval(check); resolve();
+        }
+      }, 500);
     });
-    await sleep(1500);
+    await sleep(3000);  // brief settle so FB finalizes before injecting photos
     console.log('DealersOrbit: Video processed — injecting photos now...');
 
     // Pass 2: find the file input inside the now-open composer and add photos

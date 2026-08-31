@@ -697,7 +697,7 @@ signOutBtn?.addEventListener("click", async () => {
     'token', 'user', 'subscription_cache',
     'pending_review_queue', 'queue',
     'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
-    'sold_notifications', 'last_sold_check',
+    'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
     'dealer_configured', 'config_status',
     'onboarding_card_selector', 'onboarding_detail_url',
     'onboarding_prices', 'onboarding_waiting_detail',
@@ -2771,6 +2771,43 @@ async function syncSoldNotificationsFromBackend() {
 }
 
 // ── Init ──────────────────────────────────────────────────────
+// One-time in-popup notification when the user's dealer site config goes live.
+// Asks the background whether their dealership_url domain resolves to an active
+// config; shows a banner the first time a given platform_id is seen.
+async function checkDealerConfigReady() {
+  try {
+    const resp = await new Promise(r =>
+      chrome.runtime.sendMessage({ type: 'CHECK_DEALER_CONFIG_READY' }, r));
+    if (!resp?.ready || !resp.platform_id) return;
+    const { notified_config_platform_id } = await chrome.storage.local.get('notified_config_platform_id');
+    if (String(notified_config_platform_id) === String(resp.platform_id)) return;
+    showConfigReadyBanner(resp.domain);
+    await chrome.storage.local.set({ notified_config_platform_id: resp.platform_id });
+  } catch (e) {
+    // non-fatal — notification is best-effort
+  }
+}
+
+function showConfigReadyBanner(domain) {
+  if (document.getElementById('configReadyBanner')) return;
+  const div = document.createElement('div');
+  div.id = 'configReadyBanner';
+  div.style.cssText = 'margin:8px 12px;padding:10px 12px;border-radius:8px;background:#e7f8ee;' +
+    'color:#12864a;border:1px solid #bfe9cf;font-size:13px;display:flex;align-items:center;' +
+    'justify-content:space-between;gap:8px;';
+  const msg = document.createElement('span');
+  msg.innerHTML = `🎉 Your dealer site config for <strong>${domain}</strong> is ready! ` +
+    `Open your inventory page and refresh — the Import buttons will appear.`;
+  const x = document.createElement('button');
+  x.textContent = '×';
+  x.style.cssText = 'background:none;border:none;font-size:18px;line-height:1;cursor:pointer;color:#12864a;';
+  x.onclick = () => div.remove();
+  div.appendChild(msg);
+  div.appendChild(x);
+  const dash = document.getElementById('dashboardScreen') || document.body;
+  dash.insertBefore(div, dash.firstChild);
+}
+
 async function init() {
   // ── Language toggle ──────────────────────────────────────────
   function updateLangBtnUI(lang) {
@@ -2988,6 +3025,7 @@ async function init() {
     }
 
     await syncSoldNotificationsFromBackend();
+    await checkDealerConfigReady();
 
     await loadQuickLaunch(freshUser);
     attachQuickLaunchHandlers();
@@ -3208,7 +3246,7 @@ loginBtn.addEventListener("click", async () => {
       await chrome.storage.local.remove([
         'pending_review_queue', 'queue',
         'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
-        'sold_notifications', 'last_sold_check',
+        'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
         'dealer_configured', 'config_status', 'subscription_cache',
         'current_generating_vin', 'userLanguage',
       ]);
@@ -3243,7 +3281,7 @@ logoutBtn.addEventListener("click", async () => {
     'token', 'user', 'subscription_cache',
     'pending_review_queue', 'queue',
     'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
-    'sold_notifications', 'last_sold_check',
+    'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
     'dealer_configured', 'config_status',
     'onboarding_card_selector', 'onboarding_detail_url',
     'onboarding_prices', 'onboarding_waiting_detail',
@@ -3594,7 +3632,10 @@ async function renderQueue() {
 
 function vehicleTitle(v) {
   if (v.title) {
-    return v.title.replace(/^\s*(new|used|certified|pre-?owned)\s+/i, '').trim();
+    return v.title
+      .replace(/^\s*(new|used|certified|pre-?owned)\s+/i, '')
+      .replace(/\s+in\s+[^,]+,\s*[A-Za-z]{2}\b.*$/i, '')  // strip " in City, ST" location suffix
+      .trim();
   }
   return [v.year, v.make, v.model, v.trim].filter(Boolean).join(' ');
 }
@@ -4314,22 +4355,27 @@ function buildReviewPhotos(classified, photosAll, blockedPhotos = [], explicitOt
     });
   });
 
-  // Enforce 20-photo cap across exterior + interior + additional
-  // Priority: exterior (keep all) → interior (keep all) → additional (trim to fit)
-  const extCount = photos.exterior.length;
-  const intCount = photos.interior.length;
-  const remainingForAdditional = Math.max(0, 20 - extCount - intCount);
-
-  if (photos.additional.length > remainingForAdditional) {
-    // Move overflow from additional back to other
-    const overflow = photos.additional.slice(remainingForAdditional);
-    photos.additional = photos.additional.slice(0, remainingForAdditional);
-    photos.other = [...overflow, ...photos.other];
-  }
+  // Hard-cap the marketplace set (exterior + interior + additional) at 20 —
+  // FB's max. Priority: exterior → interior → additional; anything over budget
+  // (even excess exterior/interior) goes back to "other". This guarantees the
+  // total is never > 20 regardless of how the buckets are distributed.
+  const CAP = 20;
+  let budget = CAP;
+  const capSection = (name) => {
+    const arr = photos[name] || [];
+    const keep = arr.slice(0, Math.max(0, budget));
+    photos[name] = keep;
+    budget -= keep.length;
+    return arr.slice(keep.length);   // overflow
+  };
+  const extOverflow = capSection('exterior');
+  const intOverflow = capSection('interior');
+  const addOverflow = capSection('additional');
+  photos.other = [...extOverflow, ...intOverflow, ...addOverflow, ...photos.other];
 
   // Auto-fill additional from other when total is under 20
-  const currentTotal = extCount + intCount + photos.additional.length;
-  const needed = Math.max(0, 20 - currentTotal);
+  const currentTotal = photos.exterior.length + photos.interior.length + photos.additional.length;
+  const needed = Math.max(0, CAP - currentTotal);
 
   if (needed > 0) {
     const candidates = photos.other.filter(url => {

@@ -148,6 +148,27 @@ const API_BASE = IS_DEV
   ? "http://localhost:8000/api/v1"
   : "https://api.dealersorbit.com/api/v1";
 
+// Dealer-config domain lookups normally hit PROD (configs live on EC2), so even a
+// dev/unpacked build serves the real approved configs. In dev we ALSO check
+// localhost FIRST, so a config generated/approved against the local backend is
+// testable end-to-end before it's deployed to prod. Prod builds are unchanged.
+const CONFIG_LOOKUP_BASES = IS_DEV
+  ? ["http://localhost:8000/api/v1", "https://api.dealersorbit.com/api/v1"]
+  : ["https://api.dealersorbit.com/api/v1"];
+
+async function fetchDealerConfigForDomain(domain) {
+  for (const base of CONFIG_LOOKUP_BASES) {
+    try {
+      const resp = await fetch(`${base}/dealer-configs/domain/${domain}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.found && data.config) return data;
+      }
+    } catch (e) { /* try next base */ }
+  }
+  return { found: false, config: null };
+}
+
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 
 // Drop-in fetch wrapper for backend calls. Auto-injects the extension version
@@ -289,6 +310,24 @@ let onboardingState = {
 // ── Message handler ───────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
+  // Popup asks whether the logged-in user's dealership domain now resolves to an
+  // active config (so it can show a one-time "config ready" notification).
+  if (message.type === "CHECK_DEALER_CONFIG_READY") {
+    (async () => {
+      try {
+        const { user } = await chrome.storage.local.get('user');
+        const url = user?.dealership_url;
+        if (!url) { sendResponse({ ready: false }); return; }
+        const domain = url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+        const data = await fetchDealerConfigForDomain(domain);
+        sendResponse({ ready: !!(data.found && data.config), platform_id: data.platform_id || null, domain });
+      } catch (e) {
+        sendResponse({ ready: false });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === "GET_CONFIG") {
     (async () => {
       const domain = message.domain;
@@ -338,14 +377,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
 
-      // 1. Check backend for AI-generated active config (always hits prod — configs live on EC2)
+      // 1. Check backend for AI-generated active config (prod; dev also checks localhost first)
       try {
-        const configUrl = `https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`;
-        console.log(`DealersOrbit: Fetching backend config from ${configUrl}`);
-        const resp = await fetch(configUrl);
-        const data = await resp.json();
+        const data = await fetchDealerConfigForDomain(domain);
         console.log(`DealersOrbit: Backend response:`, data.found, data.platform);
-        if (resp.ok && data.found && data.config) {
+        if (data.found && data.config) {
           console.log(`DealersOrbit: Using backend config for ${domain} (platform: ${data.platform})`);
           sendResponse({ config: adaptBackendConfig(data.config, domain), source: "backend" });
           return;
@@ -958,9 +994,31 @@ async function extractWithRetry(extractFn, tabId, maxAttempts = 2) {
   return detailData;
 }
 
+// Apply the config's photo URL filter to vehicle.photos. Runs BEFORE
+// applyPhotoHints + classification so the 20-photo selection and the classifier
+// only ever see this car's photos (not "similar vehicles" / banners). Forgiving
+// if the admin typed a sentence — extracts the URL-ish token. No-op if unset.
+function applyConfigPhotoFilter(vehicle, photosUrlInclude, label) {
+  if (!photosUrlInclude) {
+    console.log(`DealersOrbit [photo-filter] (${label}) no photos_url_include | photos=${(vehicle.photos||[]).length}`);
+    return;
+  }
+  const m = String(photosUrlInclude).match(/[\w-]+(?:\.[\w-]+)+(?:\/[\w./-]*)?/);
+  const inc = (m ? m[0] : String(photosUrlInclude)).toLowerCase();
+  const before = (vehicle.photos || []).length;
+  const filtered = (vehicle.photos || []).filter(u => String(u).toLowerCase().includes(inc));
+  if (filtered.length) vehicle.photos = filtered;
+  console.log(`DealersOrbit [photo-filter] (${label}) "${inc}": photos ${before}->${(vehicle.photos||[]).length}`);
+}
+
 async function enrichSingleVehicle(vehicle) {
   console.log("DealersOrbit: enrichSingleVehicle:", vehicle.model);
   console.log("DealersOrbit: listing_url:", vehicle.listing_url);
+
+  // Config-driven photo URL filter (set via the Config Generator's photo filter).
+  // Captured at function scope so the common exit can apply it to whatever the
+  // extraction paths produced — the authoritative filter for "photos from other cars".
+  let photosUrlInclude = null;
 
   // VDP imports: user is already on the detail page — run extractDetailPageData
   // on the source tab instead of opening a new one
@@ -973,11 +1031,14 @@ async function enrichSingleVehicle(vehicle) {
     if (vehicle.listing_url) {
       try {
         const domain = new URL(vehicle.listing_url).hostname;
-        const cfgResp = await fetch(`https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`);
-        if (cfgResp.ok) {
-          const cfgData = await cfgResp.json();
+        const cfgData = await fetchDealerConfigForDomain(domain);
+        {
           if (cfgData.found && cfgData.config) {
             if (cfgData.config.detail_page) detailPageSelectors = cfgData.config.detail_page;
+            if (cfgData.config.detail_page?.photos_url_include) {
+              photosUrlInclude = cfgData.config.detail_page.photos_url_include;
+            }
+            console.log(`DealersOrbit [cfg] VDP config found=${cfgData.found} photos_url_include=${cfgData.config.detail_page?.photos_url_include || '(none)'}`);
             if (cfgData.config.photo_hints?.exterior_count) {
               photoHintsFromConfig = {
                 exterior_position: 'first',
@@ -1061,6 +1122,7 @@ async function enrichSingleVehicle(vehicle) {
       vehicle.mileage = 'New';
     }
 
+    applyConfigPhotoFilter(vehicle, photosUrlInclude, 'vdp');  // filter BEFORE selecting
     vehicle.photos_for_video = applyPhotoHints(vehicle.photos || [], photoHintsFromConfig);
     console.log(`DealersOrbit: VDP selected ${vehicle.photos_for_video.length} photos`);
 
@@ -1073,17 +1135,18 @@ async function enrichSingleVehicle(vehicle) {
     try {
       const domain = new URL(vehicle.listing_url).hostname;
 
-      // Backend config first
-      const cfgResp = await fetch(
-        `https://api.dealersorbit.com/api/v1/dealer-configs/domain/${domain}`
-      );
-      if (cfgResp.ok) {
-        const cfgData = await cfgResp.json();
+      // Backend config first (prod; dev also checks localhost first)
+      const cfgData = await fetchDealerConfigForDomain(domain);
+      {
         if (cfgData.found && cfgData.config) {
           if (cfgData.config.detail_page) {
             detailPageSelectors = cfgData.config.detail_page;
             console.log(`DealersOrbit: Using backend detail selectors for ${domain}`);
           }
+          if (cfgData.config.detail_page?.photos_url_include) {
+            photosUrlInclude = cfgData.config.detail_page.photos_url_include;
+          }
+          console.log(`DealersOrbit [cfg] config found=${cfgData.found} photos_url_include=${cfgData.config.detail_page?.photos_url_include || '(none)'}`);
           if (cfgData.config.photo_hints?.exterior_count) {
             photoHintsFromConfig = {
               exterior_position: 'first',
@@ -1309,6 +1372,9 @@ async function enrichSingleVehicle(vehicle) {
       // Filter junk from card photos too (logos/widgets that slipped past content script)
       vehicle.photos = filterJunkPhotos(vehicle.photos || []);
 
+      // Config photo URL filter BEFORE selecting — so hints pick from clean photos
+      applyConfigPhotoFilter(vehicle, photosUrlInclude, 'regular');
+
       // Apply photo hints — already resolved above, no second fetch needed
       vehicle.photos_for_video = applyPhotoHints(vehicle.photos, photoHintsFromConfig);
       console.log(`DealersOrbit: Selected ${vehicle.photos_for_video.length} photos using hints`);
@@ -1324,6 +1390,18 @@ async function enrichSingleVehicle(vehicle) {
   }
 
   } // end else (non-VDP)
+
+  // Guard: mileage must contain a digit (or be "New"). A fragile/positional
+  // config selector can grab non-numeric text like "Cruise Control" on the live
+  // page; drop it rather than show garbage (better blank than wrong).
+  if (vehicle.mileage && !/\d/.test(String(vehicle.mileage)) && !/^new$/i.test(String(vehicle.mileage).trim())) {
+    console.log('DealersOrbit: dropping non-numeric mileage:', vehicle.mileage);
+    vehicle.mileage = null;
+  }
+
+  // NOTE: the config photo URL filter now runs earlier — inside each branch via
+  // applyConfigPhotoFilter(), BEFORE applyPhotoHints + classification — so the
+  // 20-photo selection and the classifier only ever see this car's photos.
 
   // ── Step 2: Always add to review queue as a card ──────────
   const { pending_review_queue = [] } =
@@ -1434,14 +1512,37 @@ async function classifySingleVehicle(vehicle, queueItemId) {
 
     const classified = await resp.json();
 
-    // Rescue first photo into exterior if Claude missed it
+    // Fall back to the first scraped photo ONLY if the classifier found NO
+    // exterior at all (so the ad isn't empty). Otherwise TRUST the classification
+    // + walkaround order — the backend already returns exterior front-first.
+    // Do NOT force the first photo to be the hero: some dealers (e.g. AG Auto)
+    // lead with a screen / sunroof / detail shot, and forcing that to the front
+    // of exterior made the wrong photo the hero on every car.
     const firstPhoto = allPhotos[0];
-    if (firstPhoto && !classified.exterior?.includes(firstPhoto)) {
-      classified.other     = (classified.other     || []).filter(u => u !== firstPhoto);
-      classified.interior  = (classified.interior  || []).filter(u => u !== firstPhoto);
+    if (firstPhoto && !(classified.exterior || []).length) {
+      classified.other      = (classified.other      || []).filter(u => u !== firstPhoto);
+      classified.interior   = (classified.interior   || []).filter(u => u !== firstPhoto);
       classified.additional = (classified.additional || []).filter(u => u !== firstPhoto);
-      classified.exterior  = [firstPhoto, ...(classified.exterior || [])];
+      classified.exterior   = [firstPhoto];
+      console.log('DealersOrbit: no exterior classified — using first photo as exterior fallback');
     }
+
+    // Lead exterior with the dealer's OWN hero convention: match the first scraped
+    // exterior 3/4 (front-left vs front-right — AG uses front-left). If the dealer's
+    // lead angle isn't found, the backend's front-left→front-right→front cascade stands.
+    try {
+      const labelOf = {};
+      (classified.classified || []).forEach(p => { labelOf[p.url] = p.label; });
+      let dealerHero = null;
+      for (const u of allPhotos) {
+        const l = labelOf[u];
+        if (l === 'exterior_front_left' || l === 'exterior_front_right') { dealerHero = u; break; }
+      }
+      if (dealerHero && (classified.exterior || []).includes(dealerHero) && classified.exterior[0] !== dealerHero) {
+        classified.exterior = [dealerHero, ...classified.exterior.filter(u => u !== dealerHero)];
+        console.log(`DealersOrbit: hero set to dealer's lead angle ${labelOf[dealerHero]}`);
+      }
+    } catch (e) { /* non-fatal — keep backend order */ }
 
     const explicitOther = Array.from(new Set(classified.other || []));
 
@@ -1758,17 +1859,60 @@ async function extractCarsDotComVdpData() {
 function extractDetailPageData(selectors) {
   selectors = selectors || {};
 
-  const skipPatterns = ['thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 'badge', 'placeholder', '1x1', 'spacer'];
+  const skipPatterns = ['thumb_', '/thumb/', 'thumbnail', 'logo', 'icon', 'badge', 'placeholder', '1x1', 'spacer',
+    // carsforsale.com lazy-load placeholders (real photos live under /<hash>/<size>/…)
+    'sports_car_front_view', 'carsforsale.com/images/', '/images/no_'];
 
   // Safe wrappers — invalid CSS selectors (e.g. jQuery :contains()) throw in querySelector
   const safeQuery    = (sel) => { try { return sel ? document.querySelector(sel) : null; } catch (e) { return null; } };
   const safeQueryAll = (sel) => { try { return sel ? Array.from(document.querySelectorAll(sel)) : []; } catch (e) { return []; } };
+  // Best real image URL for an <img>: lazy-load attributes hold the REAL photo
+  // while src is often a placeholder (carsforsale uses data-lazy). Check the
+  // common lazy attrs before src, and take the first URL of a srcset.
+  const bestImgUrl = (img) => {
+    if (!img) return '';
+    let u = img.getAttribute('data-lazy') || img.getAttribute('data-src') ||
+            img.getAttribute('data-original') || img.getAttribute('data-lazy-src') ||
+            img.getAttribute('data-srcset') || img.getAttribute('srcset') || img.src || '';
+    if (u.includes(' ')) u = u.trim().split(/\s+/)[0];   // srcset → first URL
+    return u.replace(/\?.*$/, '');
+  };
   // Extract only the dollar amount from an element — avoids grabbing label text like "JBA Price Freight Included"
   const getPriceText = (el) => {
     if (!el) return null;
     const full = el.textContent?.trim() || '';
     const match = full.match(/\$[\d,]+/);
     return match ? match[0] : (full.length < 15 && /\d/.test(full) ? full : null);
+  };
+
+  // Generalized label→value scan. Finds an element whose text IS one of the
+  // labels, then returns the adjacent value — handles <dt>/<dd>, <th>/<td>, AND
+  // "<div class=label>Label</div><div class=detail>Value</div>" sibling layouts
+  // (e.g. dealer.com features_snapshot) that a CSS selector can't target because
+  // the value cell shares its class with unrelated items (mileage vs. "Premium
+  // Sound"). `validate` optionally rejects wrong matches (e.g. mileage must be numeric).
+  const scanByLabel = (labels, validate) => {
+    const kws = labels.map(k => k.toLowerCase());
+    const ok  = (v) => !!v && (!validate || validate(v));
+    const els = document.querySelectorAll(
+      'dt, th, label, .features_snapshot__label, [class*="__label"], [class*="-label"], span, div, li, td'
+    );
+    for (const k of kws) {                     // priority: most specific label first
+      for (const el of els) {
+        const t = (el.textContent || '').trim().toLowerCase().replace(/:$/, '');
+        if (t !== k || t.length > 40) continue;
+        // 1) next sibling element with text
+        let sib = el.nextElementSibling;
+        while (sib && !sib.textContent.trim()) sib = sib.nextElementSibling;
+        if (sib) { const v = sib.textContent.trim().replace(/\s+/g, ' '); if (ok(v)) return v; }
+        // 2) a value-ish sibling under the same parent
+        if (el.parentElement) {
+          const valEl = el.parentElement.querySelector('[class*="detail"],[class*="value"],dd,td');
+          if (valEl && valEl !== el) { const v = valEl.textContent.trim().replace(/\s+/g, ' '); if (ok(v)) return v; }
+        }
+      }
+    }
+    return null;
   };
 
   // ── Trigger full carousel load ────────────────────────────
@@ -1780,10 +1924,12 @@ function extractDetailPageData(selectors) {
   if (nextBtns.length > 0) {
     for (let i = 0; i < totalSlides + 2; i++) nextBtns[0].click();
   }
-  safeQueryAll('img[data-src], img[data-lazy-src], img[data-lazysrc]').forEach(img => {
+  safeQueryAll('img[data-src], img[data-lazy-src], img[data-lazysrc], img[data-lazy], img[data-original]').forEach(img => {
     if (img.dataset.src) img.src = img.dataset.src;
     if (img.dataset.lazySrc) img.src = img.dataset.lazySrc;
     if (img.dataset.lazysrc) img.src = img.dataset.lazysrc;
+    if (img.dataset.lazy) img.src = img.dataset.lazy;         // carsforsale
+    if (img.dataset.original) img.src = img.dataset.original;
   });
 
   // ── VIN ───────────────────────────────────────────────────
@@ -1852,13 +1998,21 @@ function extractDetailPageData(selectors) {
   }
 
   // ── Mileage ───────────────────────────────────────────────
+  // Mileage must be numeric — a shared-class selector can grab a feature name
+  // ("Premium Sound", "Cruise Control"); reject any non-numeric result.
+  const isMileage = (v) => /\d/.test(String(v || ''));
   let mileage = null;
   if (selectors.mileage) {
-    mileage = safeQuery(selectors.mileage)?.textContent?.trim() || null;
+    const m = safeQuery(selectors.mileage)?.textContent?.trim() || null;
+    if (isMileage(m)) mileage = m;
   }
   if (!mileage) {
     const mileageEls = safeQueryAll('.highlight-badge, [class*="mileage"], [class*="miles"]');
     mileage = mileageEls.find(el => /miles|mi\b/i.test(el.innerText))?.innerText?.trim() || null;
+  }
+  if (!mileage) {
+    // Generalized label→value scan (dealer.com features_snapshot etc.)
+    mileage = scanByLabel(['mileage', 'odometer', 'miles'], isMileage);
   }
 
   // ── Colors + body style ───────────────────────────────────
@@ -1866,14 +2020,20 @@ function extractDetailPageData(selectors) {
   let interiorColor = null;
   let bodyStyle = null;
 
+  // Only trust a selector that matches EXACTLY ONE element — a value class shared
+  // with unrelated items (features_snapshot) matches many and grabs the wrong one.
+  const oneMatchText = (sel) => {
+    const els = safeQueryAll(sel);
+    return els.length === 1 ? (els[0].textContent?.trim() || null) : null;
+  };
   if (selectors.exterior_color) {
-    exteriorColor = safeQuery(selectors.exterior_color)?.textContent?.trim() || null;
+    exteriorColor = oneMatchText(selectors.exterior_color);
   }
   if (selectors.interior_color) {
-    interiorColor = safeQuery(selectors.interior_color)?.textContent?.trim() || null;
+    interiorColor = oneMatchText(selectors.interior_color);
   }
   if (selectors.body_style) {
-    const raw = safeQuery(selectors.body_style)?.textContent?.trim() || null;
+    const raw = oneMatchText(selectors.body_style);
     bodyStyle = raw ? raw.split('/')[0].trim() : null;
   }
 
@@ -1896,6 +2056,14 @@ function extractDetailPageData(selectors) {
     });
   }
 
+  // Generalized label→value scan for label/value div layouts (features_snapshot etc.)
+  if (!exteriorColor) exteriorColor = scanByLabel(['exterior color', 'exterior']);
+  if (!interiorColor) interiorColor = scanByLabel(['interior color', 'interior']);
+  if (!bodyStyle) {
+    const b = scanByLabel(['body style', 'body type', 'body']);
+    if (b) bodyStyle = b.split('/')[0].trim();  // "Hatchback/5" -> "Hatchback"
+  }
+
   // ── Photos ────────────────────────────────────────────────
   // Run all methods and keep whichever yields the most photos
 
@@ -1903,7 +2071,7 @@ function extractDetailPageData(selectors) {
   let photosBySelector = [];
   if (selectors.photos) {
     photosBySelector = safeQueryAll(selectors.photos)
-      .map(img => (img.getAttribute('data-src') || img.src || '').replace(/\?.*$/, ''))
+      .map(bestImgUrl)   // reads data-lazy/data-src/srcset before src (lazy galleries)
       .filter(src => src && src.startsWith('http') && !skipPatterns.some(p => src.toLowerCase().includes(p)))
       .filter((src, i, arr) => arr.indexOf(src) === i)
       .slice(0, 40);
@@ -1926,11 +2094,21 @@ function extractDetailPageData(selectors) {
 
   if (!photos.length) {
     photos = safeQueryAll('img')
-      .map(img => (img.getAttribute('data-src') || img.src || '').replace(/\?.*$/, ''))
+      .map(bestImgUrl)   // lazy-aware
       .filter(src => src.startsWith('http') && src.match(/\.(jpg|jpeg|webp|png)/i))
       .filter(src => !skipPatterns.some(p => src.toLowerCase().includes(p)))
       .filter((src, i, arr) => arr.indexOf(src) === i)
       .slice(0, 40);
+  }
+
+  // Config-driven URL filter — some sites mix the main gallery with "similar
+  // vehicles" using the same img markup, which a CSS selector can't separate.
+  // If the config specifies a URL substring that only THIS car's photos contain,
+  // keep just those (e.g. "imagescf.dealercenter.net/719").
+  if (selectors.photos_url_include) {
+    const inc = String(selectors.photos_url_include).toLowerCase();
+    const filtered = photos.filter(src => src.toLowerCase().includes(inc));
+    if (filtered.length) photos = filtered;
   }
 
   return { vin, title: titleText, photos, price, processing_fee: processingFee, mileage, exterior_color: exteriorColor, interior_color: interiorColor, body_style: bodyStyle };
@@ -2210,6 +2388,7 @@ function parseYearMakeModelFromTitle(title) {
   const yearMatch = title.match(/\b(19|20)\d{2}\b/);
   const year = yearMatch?.[0] || null;
   const rest = title
+    .replace(/\s+in\s+[^,]+,\s*[A-Za-z]{2}\b.*$/i, '')  // strip " in City, ST" location suffix
     .replace(/\b(19|20)\d{2}\b/, '')
     .replace(/\b(pre-?owned|used|new|certified|cpo)\b/gi, '')
     .trim();
@@ -2239,7 +2418,7 @@ function isGenericCardText(text) {
 
 function parseTrimFromTitle(title, year, make, model) {
   if (!title) return null;
-  let trim = title;
+  let trim = title.replace(/\s+in\s+[^,]+,\s*[A-Za-z]{2}\b.*$/i, '');  // strip " in City, ST"
   if (year)  trim = trim.replace(year, '');
   if (make)  trim = trim.replace(new RegExp(make, 'gi'), '');
   if (model) trim = trim.replace(new RegExp(model.replace(/[-/]/g,'\\$&'), 'gi'), '');

@@ -181,6 +181,11 @@ function showSubscriptionOverlay(message_type) {
       title:   "Subscription Cancelled",
       message: "Your DealersOrbit subscription has been cancelled. Reactivate your subscription to continue generating ads.",
     },
+    dealership_inactive: {
+      icon:    "🏢",
+      title:   "Dealership Subscription Inactive",
+      message: "Your dealership's DealersOrbit subscription is no longer active. Ask your manager to renew it, or subscribe individually to continue.",
+    },
   };
 
   const c = content[message_type] || content["cancelled"];
@@ -916,10 +921,12 @@ document.getElementById('manageSubscriptionBtn')?.addEventListener('click', asyn
 // past_due) get the Stripe portal; new users with no billing account fall back
 // to the website billing page.
 document.getElementById('overlayUpgradeBtn')?.addEventListener('click', async () => {
-  // Trial-expired users have no billing account yet — send them to the in-extension
-  // plan picker. Existing customers (past_due / cancelled) go to the Stripe portal.
-  if (currentBlockReason === 'trial_expired') {
-    openUpgradeModal('TRIAL_EXPIRED');
+  // Trial-expired users AND dealership team members (whose dealership sub lapsed)
+  // have no billing account yet — send them to the in-extension plan picker so they
+  // can subscribe individually (which decouples them from the dealership). Existing
+  // individual customers (past_due / cancelled) go to the Stripe portal.
+  if (currentBlockReason === 'trial_expired' || currentBlockReason === 'dealership_inactive') {
+    openUpgradeModal(currentBlockReason === 'dealership_inactive' ? 'dealership_inactive' : 'TRIAL_EXPIRED');
     return;
   }
 
@@ -1839,6 +1846,9 @@ function planLabel(user) {
       : 0;
     return `Free Trial — ${daysLeft} day${daysLeft !== 1 ? "s" : ""} left`;
   }
+  // Team member inheriting the dealership's plan — show "Dealership plan" with no
+  // price (they don't pay; the manager's account holds the subscription).
+  if (user?.plan_source === "dealership") return "Dealership plan";
   const base = PLANS[user?.purchased_plan] || "Active plan";
   if (user?.subscription_status === "cancelled") return `${base} (cancelled)`;
   if (user?.subscription_status === "past_due")  return `${base} (payment due)`;

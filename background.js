@@ -363,18 +363,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      // Domain restriction — only serve config for user's registered dealership
-      const ADMIN_EMAILS = ['yoseph@jbakia.com', 'yosephfl@gmail.com'];
+      // Domain restriction — a dealer-site config is served ONLY for the domain
+      // the account is ASSIGNED to (its dealership_url). Cars.com / CarGurus above
+      // are the only universal sources. Rules:
+      //   - No dealership_url  → no dealer-site config (a user with no assigned
+      //     dealer site gets nothing here).
+      //   - No email/role bypass — even admins get only their assigned domain,
+      //     so nobody imports from a dealership they aren't assigned to. (To test
+      //     a site, assign its config to your account, which sets dealership_url.)
+      // The user's own freshly-generated onboarding config (step 0 above) is the
+      // one exception and is handled before this.
       const { user } = await chrome.storage.local.get('user');
-      const isAdmin = ADMIN_EMAILS.includes(user?.email?.toLowerCase());
-
-      if (!isAdmin && user?.dealership_url) {
-        const userDomain = user.dealership_url.split('/')[0].replace(/^www\./, '');
-        const currentDomain = domain.replace(/^www\./, '');
-        if (currentDomain !== userDomain && !currentDomain.endsWith('.' + userDomain)) {
-          sendResponse({ config: null, source: 'restricted' });
-          return;
-        }
+      const currentDomain = domain.replace(/^www\./, '').toLowerCase();
+      // Domains this account may use dealer-site configs for. The backend computes
+      // `allowed_config_domains` in /auth/me — a dealership user inherits the
+      // dealership's config domain(s) (dealer takes precedence over their own).
+      // Fall back to the account's own dealership_url for older cached user objects.
+      let allowed = Array.isArray(user?.allowed_config_domains) ? user.allowed_config_domains.slice() : [];
+      if (!allowed.length && user?.dealership_url) {
+        const d = user.dealership_url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].toLowerCase();
+        if (d) allowed = [d];
+      }
+      const assigned = allowed.some(d => d && (currentDomain === d || currentDomain.endsWith('.' + d)));
+      if (!assigned) {
+        console.log(`DealersOrbit: ${domain} not in this account's allowed config domains [${allowed.join(', ') || 'none'}] — no config injected`);
+        sendResponse({ config: null, source: 'restricted' });
+        return;
       }
 
       // 1. Check backend for AI-generated active config (prod; dev also checks localhost first)

@@ -2514,6 +2514,35 @@ async function addToQueue(vehicle, videoType = "slideshow", theme = "family", cu
   // Drop the cached subscription status so the popup's trial usage indicator
   // refetches a fresh count on its next render tick.
   if (trialBlock) await chrome.storage.local.remove('subscription_cache');
+
+  // Photos-only jobs are marked completed immediately without hitting the video
+  // pipeline, so the pipeline's own trial_video_count increment never fires.
+  // Record the use on the backend now so the 5-item cap stays consistent across
+  // all ad types. Fire-and-forget with cache bust so the trial bar updates.
+  if (photosOnly && !trialBlock) {
+    const { token } = await chrome.storage.local.get('token');
+    if (token) {
+      apiFetch(`${API_BASE}/auth/record-trial-use`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          // Update the local cache immediately so the trial bar reflects the new count
+          // without waiting for a full /auth/me refetch.
+          chrome.storage.local.get('subscription_cache').then(({ subscription_cache: sc }) => {
+            if (sc) {
+              sc.trial_video_count = data.trial_video_count;
+              chrome.storage.local.set({ subscription_cache: sc });
+            } else {
+              chrome.storage.local.remove('subscription_cache');
+            }
+          });
+        })
+        .catch(() => {
+          // Non-fatal — cache bust ensures next renderQueue refetches from /auth/me.
+          chrome.storage.local.remove('subscription_cache');
+        });
+    }
+  }
+
   if (!photosOnly && !trialBlock) processQueue();
   return queue.length;
 }

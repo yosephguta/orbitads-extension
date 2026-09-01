@@ -938,7 +938,7 @@ document.getElementById('overlayUpgradeBtn')?.addEventListener('click', async ()
     const url = await openStripePortal();
     chrome.tabs.create({ url });
   } catch (err) {
-    chrome.tabs.create({ url: 'https://dealersorbit.com/#pricing' });
+    openUpgradeModal();
   } finally {
     btn.textContent = originalText;
     btn.disabled    = false;
@@ -1924,7 +1924,7 @@ async function loadQuickLaunchSettings(user) {
     if (url) chrome.tabs.create({ url });
   });
   document.getElementById('upgradeForDealerSiteBtn')?.addEventListener('click', () => {
-    chrome.tabs.create({ url: 'https://dealersorbit.com/#pricing' });
+    openUpgradeModal();
   });
 
   // Request dealer configuration

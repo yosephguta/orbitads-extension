@@ -1530,7 +1530,7 @@ async function tryFacebookPostFlow() {
   if (age > 10 * 60 * 1000) return;
 
   console.log("DealersOrbit: FB Post flow started", fb_post);
-  showDealersOrbitBanner("Preparing post...");
+  showDealersOrbitBanner("Don't click anything — DealersOrbit is filling in your listing.");
 
   try {
     // Support both new flat `photos` array (from modal) and old exterior/interior split
@@ -1673,7 +1673,7 @@ async function tryFacebookGroupsFlow() {
     return;
   }
 
-  showDealersOrbitBanner('👥 DealersOrbit: Finding your groups...');
+  showDealersOrbitBanner("Don't click anything — DealersOrbit is filling in your listing.");
 
   try {
     updateBanner('👥 DealersOrbit: Selecting first group...');
@@ -1749,6 +1749,9 @@ async function tryFacebookAutoFill() {
 
   const v = fb_listing.vehicle;
   console.log("DealersOrbit: Starting form fill...", v);
+  showDealersOrbitBanner("Don't click anything — DealersOrbit is filling in your listing.");
+
+  try {
 
   // ── Step 1: Upload video first ────────────────────────────
   await uploadVideoToFacebook(fb_listing);
@@ -1941,8 +1944,14 @@ async function tryFacebookAutoFill() {
   // the fill/record (mirrors fb_post / fb_groups_post cleanup in the other flows).
   await chrome.storage.local.remove("fb_listing");
 
+  document.querySelector(".dealersorbit-post-banner")?.remove();
   showFbAutoFillToast();
   console.log("DealersOrbit: Form fill complete — posting recorded.");
+
+  } catch (err) {
+    console.error("DealersOrbit: Marketplace fill failed:", err);
+    document.querySelector(".dealersorbit-post-banner")?.remove();
+  }
 }
 
 // ── Exterior/Interior color ────────────────────────────────

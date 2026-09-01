@@ -2531,10 +2531,12 @@ function openFbPostModal(job, mode = 'post') {
     });
   }
 
-  // Reset theme buttons
-  document.querySelectorAll('.fb-caption-theme-btn').forEach(btn => {
+  // Reset theme buttons (scoped to this modal so marketplace buttons aren't touched)
+  document.querySelectorAll('#fbPostModal .fb-caption-theme-btn').forEach(btn => {
     btn.classList.toggle('selected', btn.dataset.theme === 'hype');
   });
+  const fbCustomPanel = document.getElementById('fbCustomPromptPanel');
+  if (fbCustomPanel) { fbCustomPanel.style.display = 'none'; fbCustomPanel.innerHTML = ''; }
 
   updateFbPostSelectionUI();
 
@@ -2559,7 +2561,7 @@ function openFbPostModal(job, mode = 'post') {
   generateFbPostCaption(job, fbPostCurrentTheme);
 }
 
-async function generateFbPostCaption(job, theme) {
+async function generateFbPostCaption(job, theme, customPrompt = null) {
   const loadingEl = document.getElementById('fbCaptionLoading');
   const captionEl = document.getElementById('fbPostCaption');
   if (!captionEl) return;
@@ -2581,7 +2583,8 @@ async function generateFbPostCaption(job, theme) {
         trim:     v.trim    || null,
         price:    v.price   || null,
         mileage:  v.mileage || null,
-        theme,
+        theme:    theme || 'hype',
+        custom_prompt: customPrompt || null,
         language: userLanguage,
       }),
     });
@@ -2619,14 +2622,188 @@ function updateFbPostSelectionUI() {
   });
 }
 
-// Theme button handlers
-document.querySelectorAll('.fb-caption-theme-btn').forEach(btn => {
+// ── Shared custom-prompt panel for caption/description modals ──────
+// Reuses the same look/classes as the video-script Custom flow, scoped to the
+// content_type='caption' saved-prompt pool (shared by FB Post, Groups, Marketplace).
+let captionSavedScripts = [];
+
+async function loadCaptionScripts() {
+  const { token } = await chrome.storage.local.get('token');
+  if (!token) return [];
+  try {
+    const resp = await apiFetch(`${API_BASE}/saved-scripts/?content_type=caption`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    captionSavedScripts = data.scripts || [];
+    return captionSavedScripts;
+  } catch (err) {
+    console.error('Could not load caption prompts:', err);
+    return [];
+  }
+}
+
+// panelEl: the container div. generateFn: async (customPrompt) => fills the modal's
+// caption/description textarea. Loads the caption pool then renders the panel.
+async function openCaptionCustomPanel(panelEl, generateFn) {
+  if (!panelEl) return;
+  panelEl.style.display = 'block';
+  panelEl.innerHTML = `<p style='font-size:12px;color:#6b7280;margin:0'>Loading…</p>`;
+  await loadCaptionScripts();
+  renderCaptionCustomPanel(panelEl, generateFn);
+}
+
+function renderCaptionCustomPanel(panelEl, generateFn) {
+  let currentPrompt = '';
+
+  const savedHtml = captionSavedScripts.length ? `
+    <div style='margin-top:12px'>
+      <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 8px'>Your saved prompts</p>
+      <div>
+        ${captionSavedScripts.map(s => `
+          <div class='saved-script-option' data-script-id='${s.id}'>
+            <div style='flex:1;min-width:0'>
+              <div class='saved-script-name'>${s.name}</div>
+              <div class='saved-script-meta'>Used ${s.use_count} times</div>
+            </div>
+            <button class='saved-script-delete' data-delete-id='${s.id}' title='Delete'>✕</button>
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  panelEl.innerHTML = `
+    <button type='button' class='write-new-prompt-btn cc-write-new'>✏️ Write a new prompt</button>
+    ${savedHtml}
+    <div class='cc-input' style='display:none;margin-top:12px'>
+      <textarea class='custom-prompt-input cc-prompt'
+        placeholder='Describe the style — e.g. write it like an urgent limited-time offer'></textarea>
+      <button type='button' class='btn-primary cc-generate' style='width:100%'>Generate →</button>
+    </div>
+    <div class='cc-save' style='display:none;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-top:12px'>
+      <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 8px'>💾 Save this prompt for future use?</p>
+      <div style='display:flex;gap:8px'>
+        <input type='text' class='cc-save-name' placeholder='Name this prompt'
+          style='flex:1;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;outline:none'>
+        <button type='button' class='btn-small cc-save-btn' style='background:#16a34a;white-space:nowrap;padding:8px 12px'>Save</button>
+      </div>
+      <div class='cc-save-success' style='display:none;font-size:11px;color:#16a34a;margin-top:6px;font-weight:600'>✓ Prompt saved!</div>
+    </div>
+  `;
+
+  const inputSec = panelEl.querySelector('.cc-input');
+  const promptTa = panelEl.querySelector('.cc-prompt');
+  const genBtn   = panelEl.querySelector('.cc-generate');
+  const saveSec  = panelEl.querySelector('.cc-save');
+  const saveName = panelEl.querySelector('.cc-save-name');
+  const saveBtn  = panelEl.querySelector('.cc-save-btn');
+  const saveOk   = panelEl.querySelector('.cc-save-success');
+
+  panelEl.querySelector('.cc-write-new')?.addEventListener('click', () => {
+    promptTa.value = '';
+    inputSec.style.display = 'block';
+    saveSec.style.display = 'none';
+    promptTa.focus();
+  });
+
+  panelEl.querySelectorAll('.saved-script-option').forEach(option => {
+    option.addEventListener('click', async (e) => {
+      if (e.target.closest('.saved-script-delete')) return;
+      const id = parseInt(option.dataset.scriptId);
+      const s  = captionSavedScripts.find(x => x.id === id);
+      if (!s) return;
+      panelEl.querySelectorAll('.saved-script-option').forEach(o => o.classList.remove('selected'));
+      option.classList.add('selected');
+      promptTa.value = s.prompt_text;
+      inputSec.style.display = 'block';
+      saveSec.style.display = 'none';
+      promptTa.focus();
+      const { token } = await chrome.storage.local.get('token');
+      apiFetch(`${API_BASE}/saved-scripts/${id}/use`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}` },
+      }).catch(() => {});
+    });
+  });
+
+  panelEl.querySelectorAll('.saved-script-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = parseInt(btn.dataset.deleteId);
+      const { token } = await chrome.storage.local.get('token');
+      try {
+        await apiFetch(`${API_BASE}/saved-scripts/${id}`, {
+          method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` },
+        });
+        captionSavedScripts = captionSavedScripts.filter(x => x.id !== id);
+        renderCaptionCustomPanel(panelEl, generateFn);
+      } catch (err) { console.error('Delete failed:', err); }
+    });
+  });
+
+  genBtn?.addEventListener('click', async () => {
+    const prompt = promptTa.value.trim();
+    if (!prompt) { promptTa.focus(); return; }
+    currentPrompt = prompt;
+    genBtn.textContent = 'Generating…';
+    genBtn.disabled = true;
+    try {
+      await generateFn(prompt);
+      saveName.value = '';
+      saveOk.style.display = 'none';
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+      saveSec.style.display = 'block';
+    } catch (err) {
+      // generateFn logs its own errors; leave panel open for a retry
+    } finally {
+      genBtn.textContent = 'Generate →';
+      genBtn.disabled = false;
+    }
+  });
+
+  saveBtn?.addEventListener('click', async () => {
+    const name = saveName.value.trim();
+    if (!name) { saveName.focus(); return; }
+    if (!currentPrompt) return;
+    saveBtn.textContent = 'Saving…';
+    saveBtn.disabled = true;
+    try {
+      const { token } = await chrome.storage.local.get('token');
+      const resp = await apiFetch(`${API_BASE}/saved-scripts/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ name, prompt_text: currentPrompt, content_type: 'caption' }),
+      });
+      if (!resp.ok) { const err = await resp.json(); throw new Error(err.detail || 'Save failed'); }
+      const saved = await resp.json();
+      captionSavedScripts.push(saved);
+      saveOk.style.display = 'block';
+      saveBtn.textContent = '✓ Saved';
+      setTimeout(() => { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }, 2000);
+    } catch (err) {
+      alert(err.message || 'Failed to save. Please try again.');
+      saveBtn.textContent = 'Save';
+      saveBtn.disabled = false;
+    }
+  });
+}
+
+// Theme button handlers — scoped to the FB Post modal so they don't also fire
+// for the marketplace buttons (which share the .fb-caption-theme-btn class).
+document.querySelectorAll('#fbPostModal .fb-caption-theme-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     fbPostCurrentTheme = btn.dataset.theme;
-    document.querySelectorAll('.fb-caption-theme-btn').forEach(b =>
+    document.querySelectorAll('#fbPostModal .fb-caption-theme-btn').forEach(b =>
       b.classList.toggle('selected', b === btn)
     );
-    if (fbPostModalJob) generateFbPostCaption(fbPostModalJob, fbPostCurrentTheme);
+    const panel = document.getElementById('fbCustomPromptPanel');
+    if (fbPostCurrentTheme === 'custom') {
+      openCaptionCustomPanel(panel, (prompt) =>
+        generateFbPostCaption(fbPostModalJob, null, prompt));
+    } else {
+      if (panel) panel.style.display = 'none';
+      if (fbPostModalJob) generateFbPostCaption(fbPostModalJob, fbPostCurrentTheme);
+    }
   });
 });
 
@@ -2681,6 +2858,8 @@ function openMarketplaceModal(job) {
   document.querySelectorAll('.mp-theme-btn').forEach(btn => {
     btn.classList.toggle('selected', btn.dataset.theme === 'value');
   });
+  const mpCustomPanel = document.getElementById('mpCustomPromptPanel');
+  if (mpCustomPanel) { mpCustomPanel.style.display = 'none'; mpCustomPanel.innerHTML = ''; }
 
   updateMpSelectionUI();
 
@@ -2710,7 +2889,7 @@ function updateMpSelectionUI() {
   });
 }
 
-async function generateMarketplaceDescription(theme) {
+async function generateMarketplaceDescription(theme, customPrompt = null) {
   if (!mpModalJob) return;
 
   const loadingEl = document.getElementById('mpCaptionLoading');
@@ -2738,7 +2917,8 @@ async function generateMarketplaceDescription(theme) {
         mileage:     v.mileage,
         vin:         v.vin,
         listing_url: v.listing_url,
-        theme:       theme,
+        theme:       theme || 'value',
+        custom_prompt: customPrompt || null,
         language:    userLanguage,
       }),
     });
@@ -2876,7 +3056,14 @@ async function init() {
       document.querySelectorAll('.mp-theme-btn').forEach(b =>
         b.classList.toggle('selected', b === btn)
       );
-      generateMarketplaceDescription(mpCurrentTheme);
+      const panel = document.getElementById('mpCustomPromptPanel');
+      if (mpCurrentTheme === 'custom') {
+        openCaptionCustomPanel(panel, (prompt) =>
+          generateMarketplaceDescription(null, prompt));
+      } else {
+        if (panel) panel.style.display = 'none';
+        generateMarketplaceDescription(mpCurrentTheme);
+      }
     });
   });
 
@@ -3896,7 +4083,7 @@ async function loadSavedScripts() {
   const { token } = await chrome.storage.local.get('token');
   if (!token) return [];
   try {
-    const resp = await apiFetch(`${API_BASE}/saved-scripts/`, {
+    const resp = await apiFetch(`${API_BASE}/saved-scripts/?content_type=video`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     if (!resp.ok) return [];
@@ -4140,7 +4327,7 @@ document.getElementById('saveScriptBtn')?.addEventListener('click', async () => 
     const resp = await apiFetch(`${API_BASE}/saved-scripts/`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ name, prompt_text: prompt }),
+      body: JSON.stringify({ name, prompt_text: prompt, content_type: 'video' }),
     });
     if (!resp.ok) {
       const err = await resp.json();

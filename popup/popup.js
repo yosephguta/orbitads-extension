@@ -642,6 +642,9 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
 });
 
 settingsBackBtn?.addEventListener("click", () => showScreen(dashboardScreen));
+document.getElementById("tutorialBtn")?.addEventListener("click", () => {
+  chrome.tabs.create({ url: "https://dealersorbit.com/tutorial" });
+});
 helpBtn?.addEventListener("click", () => {
   showScreen(helpScreen);
 });

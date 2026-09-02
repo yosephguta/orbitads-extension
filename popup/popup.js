@@ -722,7 +722,7 @@ signOutBtn?.addEventListener("click", async () => {
 // billing account (backend returns 400 when stripe_customer_id is unset).
 async function openStripePortal() {
   const { token } = await chrome.storage.local.get('token');
-  const resp = await fetch(`${API_BASE}/billing/portal`, {
+  const resp = await apiFetch(`${API_BASE}/billing/portal`, {
     method:  'POST',
     headers: { 'Authorization': `Bearer ${token}` },
   });
@@ -853,7 +853,7 @@ async function startCheckout(plan) {
 
   try {
     const { token } = await chrome.storage.local.get('token');
-    const resp = await fetch(`${API_BASE}/billing/checkout/${plan}`, {
+    const resp = await apiFetch(`${API_BASE}/billing/checkout/${plan}`, {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${token}` },
     });
@@ -1782,11 +1782,12 @@ async function autoTranslateTagline() {
     customInput.value = data.translated;
 
     // Auto-save the translation
-    await fetch(`${API_BASE}/auth/me`, {
+    const saveResp = await apiFetch(`${API_BASE}/auth/me`, {
       method:  'PATCH',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body:    JSON.stringify({ custom_tagline_es: data.translated }),
     });
+    if (!saveResp.ok) throw new Error('Auto-save failed');
 
     const { user: storedUser = {} } = await chrome.storage.local.get('user');
     storedUser.custom_tagline_es = data.translated;
@@ -1942,11 +1943,12 @@ async function loadQuickLaunchSettings(user) {
     try {
       const { token } = await chrome.storage.local.get('token');
       // Save the URL first
-      await fetch(`${API_BASE}/auth/me`, {
+      const saveResp = await apiFetch(`${API_BASE}/auth/me`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body:    JSON.stringify({ dealer_inventory_url: url }),
       });
+      if (!saveResp.ok) throw new Error('Failed to save URL');
       // Then request config
       const resp = await fetch(`${API_BASE}/auth/request-dealer-config`, {
         method:  'POST',
@@ -1987,7 +1989,7 @@ async function loadQuickLaunchSettings(user) {
 
     try {
       const { token } = await chrome.storage.local.get('token');
-      await fetch(`${API_BASE}/auth/me`, {
+      const saveResp = await apiFetch(`${API_BASE}/auth/me`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
@@ -1996,6 +1998,7 @@ async function loadQuickLaunchSettings(user) {
           dealer_inventory_url: dlrUrl  || null,
         }),
       });
+      if (!saveResp.ok) throw new Error('Save failed');
 
       // Update in-memory + cached user, then refresh dashboard buttons
       quickLaunchUrls.cars_com = carsUrl || null;
@@ -3022,7 +3025,7 @@ async function init() {
       const { token } = await chrome.storage.local.get('token');
       if (!token) return;
 
-      const patchResp = await fetch(`${API_BASE}/auth/me`, {
+      const patchResp = await apiFetch(`${API_BASE}/auth/me`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body:    JSON.stringify({ preferred_language: lang }),
@@ -3031,6 +3034,8 @@ async function init() {
       if (patchResp.ok) {
         const updated = await patchResp.json();
         await chrome.storage.local.set({ user: updated });
+      } else {
+        alert('Failed to save language preference. Please try again.');
       }
 
       await loadVoiceSettings();

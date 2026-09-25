@@ -490,15 +490,15 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     reviewVehicle = item.vehicle;
     modalQueueItemId = item.queue_item_id || null;
 
-    if (item.classified) {
+    if (item.review_photos) {
+      reviewPhotos = item.review_photos;
+    } else if (item.classified) {
       reviewPhotos = buildReviewPhotos(
         item.classified,
         item.photos_all || item.vehicle?.photos || [],
         item.blocked_photos || [],
         item.explicit_other || []
       );
-    } else if (item.review_photos) {
-      reviewPhotos = item.review_photos;
     } else {
       reviewPhotos = { exterior: [], interior: [], additional: [], other: [] };
     }
@@ -621,12 +621,19 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
       const videoPhotoSet = new Set(photosForVideo);
       const remainingPhotos = allPhotos.filter(url => !videoPhotoSet.has(url));
 
+      // Restore the actual exterior/interior buckets saved at generate time.
+      // Fallback to a positional split only for old jobs that predate the fields.
+      const photoExterior  = job.vehicle.photos_exterior || photosForVideo.slice(0, 6);
+      const photoInterior  = job.vehicle.photos_interior || photosForVideo.slice(6, 8);
+      const usedSet        = new Set([...photoExterior, ...photoInterior]);
+      const photoAdditional = photosForVideo.filter(url => !usedSet.has(url));
+
       reviewVehicle = job.vehicle;
       reviewPhotos = {
-        exterior: photosForVideo.slice(0, 6),
-        interior: photosForVideo.slice(6, 8),
-        additional: photosForVideo.slice(8),
-        other: remainingPhotos,
+        exterior:   photoExterior,
+        interior:   photoInterior,
+        additional: photoAdditional,
+        other:      remainingPhotos,
       };
 
       showReviewScreen({
@@ -634,7 +641,7 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
         photos_all: allPhotos,
         view_only: true,
         completed_job: job,
-        classified: { exterior: photosForVideo.slice(0, 6), interior: photosForVideo.slice(6, 8), additional: photosForVideo.slice(8), other: [] },
+        classified: { exterior: photoExterior, interior: photoInterior, additional: photoAdditional, other: [] },
         review_photos: reviewPhotos,
       });
     }
@@ -2450,6 +2457,12 @@ document.addEventListener("click", async (e) => {
 
 
 backBtn.addEventListener("click", async () => {
+  // Save any unsaved arrangement changes before leaving the review screen.
+  // Each individual edit (drag, remove, upload) already saves, so this is
+  // a safety net for any path that might have been missed.
+  if (reviewVehicle) {
+    try { await saveReviewPhotos(); } catch (err) { console.error('saveReviewPhotos failed on back:', err); }
+  }
   // Don't remove pending_review — just go back to queue
   // User can return to review by clicking the extension icon
   chrome.action.setBadgeText({ text: "!" });  // keep badge to remind them
@@ -4961,22 +4974,23 @@ async function saveReviewPhotos() {
   const { pending_review_queue = [] } =
     await chrome.storage.local.get("pending_review_queue");
 
-  const idx = pending_review_queue.findIndex(item =>
-    (reviewVehicle?.vin && item.vehicle?.vin === reviewVehicle.vin) ||
-    item.vehicle?.model === reviewVehicle?.model
-  );
+  const idx = pending_review_queue.findIndex(item => {
+    const vehicleVin = reviewVehicle?.vin;
+    const itemVin    = item.vehicle?.vin;
+    if (vehicleVin && itemVin) return itemVin === vehicleVin;
+    // VIN unavailable on one side — less reliable model fallback
+    console.warn('saveReviewPhotos: VIN missing, falling back to model match',
+      { vehicleVin, itemVin, model: reviewVehicle?.model });
+    return item.vehicle?.model === reviewVehicle?.model;
+  });
 
-  if (idx >= 0) {
-    pending_review_queue[idx].review_photos = reviewPhotos;
-    await chrome.storage.local.set({ pending_review_queue });
+  if (idx < 0) {
+    console.error('saveReviewPhotos: no matching queue item found for vehicle', reviewVehicle);
+    return;
   }
 
-  // Also save to pending_review for backward compatibility
-  const { pending_review } = await chrome.storage.local.get("pending_review");
-  if (pending_review) {
-    pending_review.review_photos = reviewPhotos;
-    await chrome.storage.local.set({ pending_review });
-  }
+  pending_review_queue[idx].review_photos = reviewPhotos;
+  await chrome.storage.local.set({ pending_review_queue });
 }
 
 function renderPhotoSections() {
@@ -5017,14 +5031,14 @@ function renderPhotoSections() {
 
   // Remove button handlers
   reviewSections.querySelectorAll(".remove-btn").forEach(btn => {
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const url = btn.dataset.url;
       const section = btn.dataset.section;
       reviewPhotos[section] = reviewPhotos[section].filter(u => u !== url);
       renderPhotoSections();
       updateFbBar();
-      saveReviewPhotos();
+      try { await saveReviewPhotos(); } catch (err) { console.error('saveReviewPhotos failed on remove:', err); }
     });
   });
 
@@ -5060,7 +5074,7 @@ function initDragAndDrop() {
       thumb.classList.remove("drag-over");
     });
 
-    thumb.addEventListener("drop", (e) => {
+    thumb.addEventListener("drop", async (e) => {
       e.preventDefault();
       e.stopPropagation();
       thumb.classList.remove("drag-over");
@@ -5081,7 +5095,7 @@ function initDragAndDrop() {
 
       renderPhotoSections();
       updateFbBar();
-      saveReviewPhotos();
+      try { await saveReviewPhotos(); } catch (err) { console.error('saveReviewPhotos failed on drag:', err); }
     });
   });
 
@@ -5096,7 +5110,7 @@ function initDragAndDrop() {
       zone.classList.remove("drag-over-grid");
     });
 
-    zone.addEventListener("drop", (e) => {
+    zone.addEventListener("drop", async (e) => {
       e.preventDefault();
       e.stopPropagation();
       zone.classList.remove("drag-over-grid");
@@ -5113,7 +5127,7 @@ function initDragAndDrop() {
 
       renderPhotoSections();
       updateFbBar();
-      saveReviewPhotos();
+      try { await saveReviewPhotos(); } catch (err) { console.error('saveReviewPhotos failed on drop-zone:', err); }
     });
   });
 }
@@ -5363,13 +5377,38 @@ document.getElementById("savePhotosBtn")?.addEventListener("click", async () => 
   queueInterval = setInterval(renderQueue, 2000);
 });
 
-// Upload handler
-uploadInput.addEventListener("change", (e) => {
-  Array.from(e.target.files).forEach(file => {
-    const url = URL.createObjectURL(file);
-    reviewPhotos.exterior.push(url);
-  });
-  renderPhotoSections();
+// Upload handler — uploads each photo to S3 so the URL survives popup close/reopen
+// and is reachable by Shotstack (blob: URLs are ephemeral, data: URLs aren't HTTP).
+uploadInput.addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) return;
+
+  for (const file of files) {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const resp = await apiFetch(`${API_BASE}/photos/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!resp.ok) {
+        console.error("DealersOrbit: photo upload failed:", resp.status);
+        continue;
+      }
+      const { url } = await resp.json();
+      reviewPhotos.exterior.push(url);
+      renderPhotoSections();
+      updateFbBar();
+    } catch (err) {
+      console.error("DealersOrbit: photo upload error:", err);
+    }
+  }
+
+  try { await saveReviewPhotos(); } catch (err) { console.error("saveReviewPhotos failed on upload:", err); }
 });
 
 

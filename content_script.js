@@ -1137,6 +1137,7 @@ async function openPostComposer() {
 }
 
 async function addCaptionToPost(caption) {
+  await waitForPageVisible();
   // After photo attachment Facebook transitions to photo-post mode — a new dialog
   // layer replaces the text composer. Scope the search to the active dialog so we
   // don't accidentally write into the home-feed "What's on your mind?" box behind it.
@@ -1172,6 +1173,7 @@ async function addCaptionToPost(caption) {
 // a post, else the last visible editor), keep the real-clipboard paste that
 // preserves line breaks, and fall back to insertText if paste doesn't land.
 async function fillGroupCaption(caption) {
+  await waitForPageVisible();
   const editors = Array.from(
     document.querySelectorAll('div[contenteditable="true"][data-lexical-editor="true"]')
   );
@@ -1210,6 +1212,7 @@ async function fillGroupCaption(caption) {
 // approach as addCaptionToPost, but insertText (no clipboard dependency) and in
 // a single shot instead of humanType's per-character loop.
 async function fillMarketplaceDescription(description) {
+  await waitForPageVisible();
   const textarea =
     document.querySelector('textarea[aria-label="Description"]') ||
     document.querySelector('textarea[name="description"]') ||
@@ -1960,6 +1963,7 @@ async function tryFacebookAutoFill() {
 
 
 async function fillDropdown(labelText, optionText) {
+  await waitForPageVisible();
   const comboboxes = Array.from(document.querySelectorAll('[role="combobox"]'));
   console.log(`DealersOrbit: Looking for "${labelText}" among ${comboboxes.length} comboboxes:`,
     comboboxes.map(el => el.innerText?.trim().slice(0, 20)));
@@ -2238,6 +2242,7 @@ function guessFuelType(make, model) {
 }
 
 async function humanType(element, text) {
+  await waitForPageVisible();
   element.focus();
   await sleep(300 + Math.random() * 300);
 
@@ -2360,6 +2365,25 @@ function setNativeValue(element, value) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Pauses autofill until the tab is visible again. Called at the top of every
+// DOM-interaction function so autofill never fires clicks into a hidden window
+// when the user tabs away momentarily (bug #5 fix).
+function waitForPageVisible() {
+  if (!document.hidden) return Promise.resolve();
+  updateBanner('⏸ Paused — return to this tab to continue.', 'working');
+  console.log('DealersOrbit: Autofill paused — tab hidden');
+  return new Promise(resolve => {
+    document.addEventListener('visibilitychange', function handler() {
+      if (!document.hidden) {
+        document.removeEventListener('visibilitychange', handler);
+        updateBanner("Don't click anything — DealersOrbit is filling in your listing.");
+        console.log('DealersOrbit: Autofill resumed');
+        resolve();
+      }
+    });
+  });
 }
 
 // ── Main ──────────────────────────────────────────────────────

@@ -190,9 +190,11 @@ async function apiFetch(endpoint, options = {}) {
   return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
 }
 
-async function handleExpiredToken() {
+async function handleExpiredToken(expiredToken) {
   await chrome.storage.local.remove(["token", "user"]);
-  await chrome.storage.local.set({ session_expired: true });
+  // Store the actual expired token value so renderQueue() can tell whether the
+  // flag was set before or after a successful re-login (bug #1 fix).
+  await chrome.storage.local.set({ session_expired: expiredToken || true });
   console.warn("DealersOrbit: Session expired — user will be prompted to sign in");
 }
 
@@ -1521,7 +1523,7 @@ async function classifySingleVehicle(vehicle, queueItemId) {
       signal: controller.signal,
     });
 
-    if (resp.status === 401) { await handleExpiredToken(); return; }
+    if (resp.status === 401) { await handleExpiredToken(token); return; }
     if (!resp.ok) return;
 
     const classified = await resp.json();
@@ -2166,7 +2168,7 @@ async function markListingPosted(vehicle, listingUrl) {
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
       headers: { "Authorization": `Bearer ${token}` },
     });
-    if (listingsResp.status === 401) { await handleExpiredToken(); return; }
+    if (listingsResp.status === 401) { await handleExpiredToken(token); return; }
     if (!listingsResp.ok) return;
 
     const listings = await listingsResp.json();
@@ -2780,7 +2782,7 @@ async function realProcessing(job, queue) {
   });
 
   if (!createResp.ok) {
-    if (createResp.status === 401) await handleExpiredToken();
+    if (createResp.status === 401) await handleExpiredToken(token);
     const err = await createResp.json().catch(() => ({}));
     throw new Error(err.detail || `API error: ${createResp.status}`);
   }
@@ -2806,7 +2808,7 @@ async function realProcessing(job, queue) {
       headers: { "Authorization": `Bearer ${token}` },
     });
 
-    if (pollResp.status === 401) { await handleExpiredToken(); throw new Error("Session expired"); }
+    if (pollResp.status === 401) { await handleExpiredToken(token); throw new Error("Session expired"); }
     if (!pollResp.ok) continue;
 
     const pollData = await pollResp.json();
@@ -2868,9 +2870,19 @@ async function realProcessing(job, queue) {
 const GENERIC_SOLD_INDICATORS = [
   'this vehicle has been sold',
   'vehicle is no longer available',
-  'no longer available',
   'vehicle sold',
-  'page not found',
+  // 'no longer available' removed — too broad; matches bot challenges and generic error pages
+  // 'page not found' removed — too broad; matches any nav element, error page, or challenge page
+];
+
+// Markers that indicate a bot-challenge page rather than the real listing page.
+// If any of these appear, the check is skipped to avoid false sold positives.
+const BOT_CHALLENGE_MARKERS = [
+  'just a moment',                          // Cloudflare interstitial title
+  'checking your browser',                  // Cloudflare subtitle
+  'cf-browser-verification',                // Cloudflare CSS class in page source
+  'enable javascript and cookies to continue', // Cloudflare body text
+  'datadome',                               // DataDome fingerprinting
 ];
 
 function getSoldIndicatorsForUrl(url) {
@@ -2882,6 +2894,16 @@ function getSoldIndicatorsForUrl(url) {
         'vehicle is no longer available',
         'this vehicle has been sold',
         'listing not found',
+      ];
+    }
+    if (domain.includes('cargurus.com')) {
+      // Use precise CarGurus-specific strings only. Redirect-based detection
+      // (below in checkListingUrl) handles the common case; these catch text
+      // indicators on pages the SW can actually read.
+      return [
+        'this listing is no longer available',
+        'listing has been removed',
+        'listing is no longer active',
       ];
     }
     const config = DEALERSHIP_CONFIGS[domain] || DEALERSHIP_CONFIGS['www.' + domain];
@@ -2915,9 +2937,24 @@ async function checkListingUrl(url) {
         return { sold: true, reason: 'cars.com: redirected away from VDP' };
       }
 
+      // CarGurus redirects expired VDPs away from the detail URL
+      if (url.includes('cargurus.com') &&
+          (url.includes('/details/') || url.includes('vdp.action')) &&
+          !resp.url.includes('/details/') && !resp.url.includes('vdp.action')) {
+        return { sold: true, reason: 'cargurus: redirected away from VDP' };
+      }
+
       const text = await resp.text();
+      const lowerText = text.toLowerCase();
+
+      // Skip bot-challenge pages — they contain generic phrases ('page not found',
+      // 'no longer available') that would trigger false sold positives.
+      if (BOT_CHALLENGE_MARKERS.some(m => lowerText.includes(m))) {
+        return { sold: false, reason: 'bot challenge — skipped' };
+      }
+
       const indicators = getSoldIndicatorsForUrl(url);
-      const matched = indicators.find(i => text.includes(i));
+      const matched = indicators.find(i => lowerText.includes(i)); // case-insensitive
       return matched
         ? { sold: true,  reason: `indicator: ${matched}` }
         : { sold: false, reason: 'active' };
@@ -2952,7 +2989,7 @@ async function runDailySoldCheck(force = false) {
     const listingsResp = await fetch(`${API_BASE}/listings/`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    if (listingsResp.status === 401) { await handleExpiredToken(); return { sold_ids: [] }; }
+    if (listingsResp.status === 401) { await handleExpiredToken(token); return { sold_ids: [] }; }
     if (!listingsResp.ok) return { sold_ids: [] };
 
     const listings = await listingsResp.json();

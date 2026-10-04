@@ -708,6 +708,19 @@ signOutBtn?.addEventListener("click", async () => {
     clearInterval(queueInterval);
     queueInterval = null;
   }
+  // Archive queue + activity flag under a user-specific key so the same user's
+  // queue and welcome-screen state survive a logout/re-login (bug #4 fix).
+  const { user: currentUser, pending_review_queue = [], queue = [], has_imported_vehicle } =
+    await chrome.storage.local.get(['user', 'pending_review_queue', 'queue', 'has_imported_vehicle']);
+  if (currentUser?.email) {
+    await chrome.storage.local.set({
+      [`user_archive_${currentUser.email}`]: {
+        pending_review_queue,
+        queue,
+        has_imported_vehicle: !!has_imported_vehicle,
+      }
+    });
+  }
   await chrome.storage.local.remove([
     'token', 'user', 'subscription_cache',
     'pending_review_queue', 'queue',
@@ -2430,12 +2443,25 @@ document.getElementById("outroSettingsList")?.addEventListener("click", async (e
       method: "DELETE",
       headers: { "Authorization": `Bearer ${token}` },
     });
-    if (!resp.ok && resp.status !== 204) throw new Error("Delete failed");
+    if (!resp.ok) throw new Error("Delete failed");
     await loadOutroSettings();
   } catch (err) {
     if (err.message === "session_expired") return;
     deleteBtn.textContent = "Delete";
     deleteBtn.disabled = false;
+    // Show inline error so the user knows the deletion didn't happen.
+    const item = deleteBtn.closest(".outro-saved-item");
+    if (item) {
+      const existing = item.querySelector(".outro-delete-error");
+      if (!existing) {
+        const errEl = document.createElement("p");
+        errEl.className = "outro-delete-error";
+        errEl.style.cssText = "color:#dc2626;font-size:11px;margin:4px 0 0";
+        errEl.textContent = "Failed to delete. Please try again.";
+        item.appendChild(errEl);
+        setTimeout(() => errEl.remove(), 5000);
+      }
+    }
   }
 });
 
@@ -3457,8 +3483,15 @@ loginBtn.addEventListener("click", async () => {
     });
     const user = await userResp.json();
 
-    // Clear all previous user's data if switching accounts
+    // Clear the session_expired flag before storing the new token so that the
+    // first renderQueue() call (below) never sees a stale flag from a previous
+    // expiry cycle (primary fix for bug #1).
+    await chrome.storage.local.remove('session_expired');
+
+    // Clear all previous user's data if switching accounts; restore archived
+    // queue/activity if the same user is logging back in (bug #4 fix).
     const { user: prevUser } = await chrome.storage.local.get('user');
+    const archiveKey = `user_archive_${user.email}`;
     if (prevUser?.email && prevUser.email !== user.email) {
       console.log('DealersOrbit: Account switch detected, clearing previous user data');
       await chrome.storage.local.remove([
@@ -3467,12 +3500,29 @@ loginBtn.addEventListener("click", async () => {
         'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
         'dealer_configured', 'config_status', 'subscription_cache',
         'current_generating_vin', 'userLanguage',
+        archiveKey, // clear any archive saved for this new user
       ]);
+    } else {
+      // Same user: restore queue + activity flag from the logout archive, if any.
+      const stored = await chrome.storage.local.get(archiveKey);
+      const archive = stored[archiveKey];
+      if (archive) {
+        await chrome.storage.local.set({
+          pending_review_queue: archive.pending_review_queue || [],
+          queue: archive.queue || [],
+          has_imported_vehicle: archive.has_imported_vehicle || false,
+        });
+        await chrome.storage.local.remove(archiveKey);
+        console.log('DealersOrbit: Restored queue from logout archive');
+      }
     }
     await chrome.storage.local.set({ token: access_token, user });
 
     showLoggedIn(user);
-    renderQueue();
+    // Await so isLoggingIn remains true for the full first render, preventing
+    // any background-written session_expired flag from triggering a spurious
+    // handleSessionExpired() call (belt-and-suspenders fix for bug #1).
+    await renderQueue();
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
     await checkShowWelcome(user);
@@ -3495,6 +3545,18 @@ document.getElementById("password").addEventListener("keydown", (e) => {
 // ── Logout ────────────────────────────────────────────────────
 logoutBtn.addEventListener("click", async () => {
   if (queueInterval) { clearInterval(queueInterval); queueInterval = null; }
+  // Archive queue + activity flag (same pattern as signOutBtn — bug #4 fix).
+  const { user: currentUser, pending_review_queue = [], queue = [], has_imported_vehicle } =
+    await chrome.storage.local.get(['user', 'pending_review_queue', 'queue', 'has_imported_vehicle']);
+  if (currentUser?.email) {
+    await chrome.storage.local.set({
+      [`user_archive_${currentUser.email}`]: {
+        pending_review_queue,
+        queue,
+        has_imported_vehicle: !!has_imported_vehicle,
+      }
+    });
+  }
   await chrome.storage.local.remove([
     'token', 'user', 'subscription_cache',
     'pending_review_queue', 'queue',
@@ -3762,12 +3824,18 @@ async function renderQueue() {
     return;
   }
 
-  // Pick up session_expired flag set by background.js
-  const { session_expired } = await chrome.storage.local.get("session_expired");
+  // Pick up session_expired flag set by background.js.
+  // The flag now stores the actual token that got the 401, so we can tell whether
+  // a re-login happened between when the flag was written and when we read it here.
+  // Only act if the flag matches the current token (or there is no current token).
+  const { session_expired, token: tokenAtCheck } = await chrome.storage.local.get(["session_expired", "token"]);
   if (session_expired) {
     await chrome.storage.local.remove("session_expired");
-    await handleSessionExpired();
-    return;
+    if (!tokenAtCheck || session_expired === tokenAtCheck) {
+      await handleSessionExpired();
+      return;
+    }
+    // Flag was for an old token; a re-login already stored a new one — discard.
   }
 
   const { queue = [], pending_review_queue = [] } =

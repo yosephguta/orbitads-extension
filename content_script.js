@@ -1039,45 +1039,140 @@ function toTitleCase(str) {
 }
 
 async function ensurePublicPrivacy() {
-  // Open privacy picker
-  const privacyBtn = document.querySelector('[aria-label*="Edit privacy"]');
-  if (!privacyBtn) {
-    console.log("DealersOrbit: privacy button not found, skipping");
+  // New FB "Create Post" UI: audience is a role="button" labeled 'Post audience'
+  // whose second text line is the current audience (e.g. 'Public' / 'Friends').
+  // Prefer the aria-label match (precise) over a textContent match (could hit a
+  // large ancestor). Fall back to the legacy "Edit privacy" button.
+  const byAria = Array.from(document.querySelectorAll('[role="button"][aria-label]'))
+    .find(el => /post audience/i.test(el.getAttribute('aria-label') || ''));
+  const audienceBtn = byAria ||
+    Array.from(document.querySelectorAll('[role="button"]'))
+      .find(el => /post audience/i.test(el.textContent || '')) ||
+    document.querySelector('[aria-label*="Edit privacy"]');
+
+  if (!audienceBtn) {
+    console.log("DealersOrbit: audience button not found, skipping");
     return;
   }
-  privacyBtn.click();
-  await new Promise(r => setTimeout(r, 1200));
 
-  // Select Public radio
-  const publicRadio = document.querySelector('input[type="radio"][name="-0"]');
-  if (publicRadio && !publicRadio.checked) {
-    publicRadio.click();
-    await new Promise(r => setTimeout(r, 600));
+  // Already Public? Nothing to do. (textContent concatenates the button's text
+  // nodes with no separator — "Post audiencePublic" — so a \bword\b boundary
+  // can't be relied on; a plain substring is safe since only the Public option
+  // contains "public".)
+  if (/public/i.test(audienceBtn.textContent || '')) {
+    console.log("DealersOrbit: audience already Public, skipping");
+    return;
   }
 
-  // Click Done button
-  const doneBtn = Array.from(document.querySelectorAll('span')).find(
-    s => s.textContent.trim() === 'Done'
-  );
+  audienceBtn.click();
+  await sleep(1200);
+
+  // Select the Public option — the <label> whose text is 'Public' /
+  // 'Anyone on or off Facebook' (the latter is Public's description line;
+  // Friends reads 'Your friends on Facebook', so this won't match it).
+  const publicLabel = Array.from(document.querySelectorAll('label')).find(l => {
+    const t = (l.textContent || '').toLowerCase();
+    return t.includes('public') || t.includes('anyone on or off facebook');
+  });
+
+  if (publicLabel) {
+    const radio = publicLabel.querySelector('input[type="radio"]');
+    if (radio && !radio.checked) radio.click();
+    if (!radio || !radio.checked) publicLabel.click();
+    await sleep(500);
+  } else {
+    // Legacy fallback: old radio selected by name
+    const legacyRadio = document.querySelector('input[type="radio"][name="-0"]');
+    if (legacyRadio && !legacyRadio.checked) { legacyRadio.click(); await sleep(500); }
+  }
+
+  // Close the audience dialog.
+  const doneBtn =
+    document.querySelector('[aria-label="Done with privacy audience selection and close dialog"]') ||
+    Array.from(document.querySelectorAll('[role="button"][aria-label]'))
+      .find(b => /done with privacy/i.test(b.getAttribute('aria-label') || ''));
+
   if (doneBtn) {
-    doneBtn.closest('[role="button"]')?.click() || doneBtn.click();
-    await new Promise(r => setTimeout(r, 800));
+    doneBtn.click();
+    await sleep(800);
     console.log("DealersOrbit: privacy set to Public");
   } else {
-    // fallback: Back button
-    const backBtn = document.querySelector('[aria-label="Back"]');
-    backBtn?.click();
-    await new Promise(r => setTimeout(r, 800));
+    // Legacy "Done" span fallback
+    const doneSpan = Array.from(document.querySelectorAll('span')).find(
+      s => s.textContent.trim() === 'Done'
+    );
+    if (doneSpan) {
+      doneSpan.closest('[role="button"]')?.click() || doneSpan.click();
+      await sleep(800);
+      console.log("DealersOrbit: privacy set to Public (legacy Done)");
+    } else {
+      document.querySelector('[aria-label="Back"]')?.click();
+      await sleep(800);
+    }
   }
 }
 
+// Returns true if the given switch element is currently ON.
+function isSwitchOn(sw) {
+  if (!sw) return false;
+  return sw.getAttribute('aria-checked') === 'true' ||
+         /^on$/i.test(sw.getAttribute('aria-label') || '');
+}
+
 async function enableAiLabel() {
-  // Find the "AI label off" button by its visible text and click it to open the dialog
+  await waitForPageVisible();
+
+  // ── New FB "Create Post" UI: "Add AI label" is a toggle switch sitting
+  // directly in the composer (input[role="switch"][type="checkbox"]; aria-label
+  // reflects state: "Off"/"On", aria-checked "false"/"true"). Find the switch
+  // that belongs to the "Add AI label" row and turn it on if it's off. ──
+  let toggle = null;
+
+  const labelEl = Array.from(document.querySelectorAll('span, div'))
+    .find(el => el.textContent && el.textContent.trim() === 'Add AI label');
+  if (labelEl) {
+    // Walk up a few ancestors to find the container that holds the switch.
+    let node = labelEl;
+    for (let i = 0; i < 6 && node; i++) {
+      const sw = node.querySelector && node.querySelector('[role="switch"]');
+      if (sw) { toggle = sw; break; }
+      node = node.parentElement;
+    }
+  }
+
+  // Fallback: the explicitly-labeled switch anywhere on the page.
+  if (!toggle) {
+    toggle = document.querySelector('input[aria-label="Add AI label"][role="switch"]') ||
+             document.querySelector('[aria-label="Add AI label"][role="switch"]');
+  }
+
+  if (toggle) {
+    if (!isSwitchOn(toggle)) {
+      // Scroll the switch into view first — it sits low in the composer and may
+      // be off-screen; toggling an off-screen element can silently no-op.
+      toggle.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await sleep(400);
+      toggle.click();
+      await sleep(500);
+      // If clicking the hidden input didn't register, click its visible wrapper.
+      if (!isSwitchOn(toggle)) {
+        (toggle.closest('label') || toggle.closest('[role="button"]') || toggle.parentElement)?.click();
+        await sleep(500);
+      }
+      console.log('DealersOrbit: AI label turned ON');
+    } else {
+      console.log('DealersOrbit: AI label already ON');
+    }
+    return;
+  }
+
+  // ── Legacy UI fallback: "AI label off" text button opens a "Labeling your
+  // content" dialog that contains the switch, dismissed with "Got it". ──
   const aiLabelSpan = Array.from(document.querySelectorAll('span'))
     .find(el => el.textContent.trim() === 'AI label off');
 
   if (!aiLabelSpan) {
-    console.log('DealersOrbit: AI label button not found, skipping');
+    console.log('DealersOrbit: AI label toggle not found, skipping');
     return;
   }
 
@@ -1093,11 +1188,11 @@ async function enableAiLabel() {
   }
 
   // Toggle the switch on if it isn't already
-  const toggle = dialog.querySelector('input[aria-label="Add AI label"][role="switch"]') ||
+  const legacyToggle = dialog.querySelector('input[aria-label="Add AI label"][role="switch"]') ||
                  document.querySelector('input[aria-label="Add AI label"][role="switch"]');
 
-  if (toggle && toggle.getAttribute('aria-checked') !== 'true') {
-    toggle.click();
+  if (legacyToggle && legacyToggle.getAttribute('aria-checked') !== 'true') {
+    legacyToggle.click();
     await sleep(500);
   }
 
@@ -1150,6 +1245,10 @@ async function addCaptionToPost(caption) {
     document.querySelector('div[contenteditable="true"][data-lexical-editor="true"]');
 
   if (!editor) throw new Error("DealersOrbit: caption editor not found");
+  // Enabling the AI label scrolled the composer down to the switch; scroll the
+  // caption box back into view before typing so the fill happens on-screen.
+  editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  await new Promise(r => setTimeout(r, 400));
   editor.focus();
   await new Promise(r => setTimeout(r, 300));
   document.execCommand('selectAll', false, null);
@@ -1282,6 +1381,43 @@ async function fetchPhotoFile(url, filename) {
   });
 }
 
+// Pick the best media file input currently in the DOM (dialog-scoped + a
+// video-accepting input preferred). Returns null if none is present yet.
+function pickPostFileInput() {
+  const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+  if (!inputs.length) return null;
+  const inDialog = inputs.filter(i => i.closest('[role="dialog"]'));
+  const pool = inDialog.length ? inDialog : inputs;
+  return pool.find(i => /video/i.test(i.accept || '')) ||
+         pool.find(i => i.multiple) ||
+         pool[0];
+}
+
+// The new FB "Create Post" UI hides the media <input type=file> behind an
+// "Add photos or videos" role=button and only mounts the real input once it's
+// clicked. Older composers (and the unchanged Groups flow) expose the input
+// directly, so we try to find it first and only click the button when nothing
+// is available — keeping the Groups flow behaviour identical.
+async function revealPostFileInput(timeoutMs = 6000) {
+  let input = pickPostFileInput();
+  if (input) return input;
+
+  const mediaBtn = Array.from(document.querySelectorAll('[role="button"]'))
+    .find(el => /add photos or videos/i.test(el.textContent || ''));
+  if (mediaBtn) {
+    console.log('DealersOrbit: clicking "Add photos or videos" to mount file input');
+    mediaBtn.click();
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(300);
+    input = pickPostFileInput();
+    if (input) return input;
+  }
+  return null;
+}
+
 async function uploadFilesToPost(photos, videoUrl) {
   const photoUrls = photos || [];
 
@@ -1290,9 +1426,7 @@ async function uploadFilesToPost(photos, videoUrl) {
     return;
   }
 
-  const fileInput =
-    document.querySelector('input[type="file"][multiple]') ||
-    document.querySelector('input[type="file"]');
+  const fileInput = await revealPostFileInput();
 
   if (!fileInput) throw new Error("DealersOrbit: file input not found on page");
 
@@ -1391,11 +1525,9 @@ async function uploadFilesToPost(photos, videoUrl) {
     // Pass 2: find the file input inside the now-open composer and add photos
     const photoFiles = (await photoDownloadPromise).filter(Boolean);
     if (photoFiles.length > 0) {
-      // After the composer opens, Facebook renders another file input inside the dialog
-      const composerInput =
-        document.querySelector('[role="dialog"] input[type="file"]') ||
-        document.querySelector('input[type="file"][multiple]') ||
-        document.querySelector('input[type="file"]');
+      // After the composer opens, reuse the mounted input (or re-mount it via the
+      // "Add photos or videos" button if Facebook swapped it out) to add photos.
+      const composerInput = pickPostFileInput() || await revealPostFileInput(5000) || fileInput;
 
       if (composerInput) {
         const dt = new DataTransfer();

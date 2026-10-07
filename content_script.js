@@ -1718,6 +1718,60 @@ async function tryFacebookPostFlow() {
   }
 }
 
+// Reel flow — triggered by ?dealersorbit_reel=1. Uploads ONLY the video (no
+// photos). Facebook turns a standalone video into a Reel automatically, so there
+// is no separate Reels entry point. Reuses the FB Post composer helpers.
+async function tryFacebookReelFlow() {
+  const { fb_reel_post } = await chrome.storage.local.get("fb_reel_post");
+  if (!fb_reel_post) return;
+  const age = Date.now() - new Date(fb_reel_post.created_at).getTime();
+  if (age > 10 * 60 * 1000) return;
+
+  console.log("DealersOrbit: FB Reel flow started", fb_reel_post);
+  showDealersOrbitBanner("Don't click anything — DealersOrbit is setting up your Reel.");
+
+  try {
+    if (!fb_reel_post.video_url) {
+      throw new Error("No video to post as a Reel");
+    }
+
+    // Video only — pass an empty photo array so uploadFilesToPost uploads just
+    // the video (a standalone video becomes a Reel on Facebook).
+    updateBanner("Uploading video...");
+    await uploadFilesToPost([], fb_reel_post.video_url);
+
+    updateBanner("Setting privacy to Public...");
+    await ensurePublicPrivacy();
+
+    updateBanner("Adding AI label...");
+    await enableAiLabel();
+
+    updateBanner("Adding caption...");
+    await addCaptionToPost(fb_reel_post.caption);
+
+    await chrome.storage.local.remove("fb_reel_post");
+    // vehicle MUST be included — the FB_REEL_POST_COMPLETE handler only records
+    // the posted_fb_reel event when message.vehicle is present.
+    chrome.runtime.sendMessage({
+      type: "FB_REEL_POST_COMPLETE",
+      job_id: fb_reel_post.job_id,
+      vehicle: fb_reel_post.vehicle,
+    });
+    chrome.runtime.sendMessage({
+      type: "MARK_LISTING_POSTED",
+      vehicle: fb_reel_post.vehicle,
+      listing_url: fb_reel_post.vehicle?.listing_url,
+    });
+
+    updateBanner("✓ Reel ready! Review and click Post.", "success");
+    console.log("DealersOrbit: FB Reel flow complete");
+
+  } catch (err) {
+    console.error("DealersOrbit: FB Reel flow failed:", err);
+    updateBanner(`❌ ${err.message}`, "error");
+  }
+}
+
 async function clickFirstGroup() {
   console.log('DealersOrbit: Looking for first group in sidebar...');
 
@@ -2747,6 +2801,13 @@ if (window.location.href.includes("facebook.com") &&
     new URLSearchParams(window.location.search).get("dealersorbit_groups") === "1") {
   console.log('DealersOrbit: FB groups post mode detected');
   setTimeout(tryFacebookGroupsFlow, 4000);
+}
+
+// FB Reel flow — triggered when popup opens facebook.com?dealersorbit_reel=1
+if (window.location.href.includes("facebook.com") &&
+    new URLSearchParams(window.location.search).get("dealersorbit_reel") === "1") {
+  console.log('DealersOrbit: FB reel post mode detected');
+  setTimeout(tryFacebookReelFlow, 1000);
 }
 
 // Also run when the URL changes (single-page apps)

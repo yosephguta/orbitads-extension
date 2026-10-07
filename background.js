@@ -721,6 +721,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'FB_REEL_POST_COMPLETE') {
+    chrome.storage.local.remove("fb_reel_post");
+    console.log('DealersOrbit: FB reel post completed for job', message.job_id);
+    (async () => {
+      const { token } = await chrome.storage.local.get("token");
+      if (token && message.vehicle) {
+        fetch(`${API_BASE}/listings/track-posting`, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({
+            event_type:    "posted_fb_reel",
+            vin:           message.vehicle.vin,
+            vehicle_year:  message.vehicle.year,
+            vehicle_make:  message.vehicle.make,
+            vehicle_model: message.vehicle.model,
+            vehicle_price: message.vehicle.price,
+          }),
+        }).catch(e => console.log("Analytics tracking failed:", e));
+      }
+    })();
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (message.type === 'RESTART_POLLING') {
     (async () => {
       const { queue = [] } = await chrome.storage.local.get('queue');

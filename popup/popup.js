@@ -548,6 +548,18 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
     return;
   }
 
+  // Reel button
+  const reelBtn = e.target.closest(".post-reel-btn");
+  if (reelBtn && !reelBtn.disabled) {
+    e.stopPropagation();
+    const jobId = reelBtn.dataset.jobId;
+    const { queue = [] } = await chrome.storage.local.get("queue");
+    const job = queue.find(j => j.id === jobId);
+    if (!job) return;
+    openReelModal(job);
+    return;
+  }
+
   // Remove failed button
   const removeBtn = e.target.closest(".remove-failed-btn");
   if (removeBtn) {
@@ -724,7 +736,7 @@ signOutBtn?.addEventListener("click", async () => {
   await chrome.storage.local.remove([
     'token', 'user', 'subscription_cache',
     'pending_review_queue', 'queue',
-    'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
+    'fb_listing', 'fb_post', 'fb_groups_post', 'fb_reel_post', 'fb_posting_history',
     'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
     'dealer_configured', 'config_status',
     'onboarding_card_selector', 'onboarding_detail_url',
@@ -2849,6 +2861,99 @@ document.querySelectorAll('#fbPostModal .fb-caption-theme-btn').forEach(btn => {
   });
 });
 
+// ── Reel Modal ────────────────────────────────────────────────
+// Like the FB Post modal but no photo picker — only the video is posted.
+// Facebook turns a standalone video into a Reel automatically.
+let reelModalJob     = null;
+let reelCurrentTheme = 'hype';
+
+function openReelModal(job) {
+  reelModalJob     = job;
+  reelCurrentTheme = 'hype';
+
+  const modal = document.getElementById('reelModal');
+  if (!modal) return;
+
+  // Video preview
+  const videoEl = document.getElementById('reelVideoPreview');
+  if (videoEl) {
+    videoEl.src = job.result_url || '';
+  }
+
+  // Reset theme buttons (scoped to this modal)
+  document.querySelectorAll('#reelModal .reel-caption-theme-btn').forEach(btn => {
+    btn.classList.toggle('selected', btn.dataset.theme === 'hype');
+  });
+  const customPanel = document.getElementById('reelCustomPromptPanel');
+  if (customPanel) { customPanel.style.display = 'none'; customPanel.innerHTML = ''; }
+
+  const submitBtn = document.getElementById('reelSubmitBtn');
+  if (submitBtn) submitBtn.disabled = false;
+
+  modal.style.display = 'flex';
+
+  // Auto-generate caption with default theme
+  generateReelCaption(job, reelCurrentTheme);
+}
+
+async function generateReelCaption(job, theme, customPrompt = null) {
+  const loadingEl = document.getElementById('reelCaptionLoading');
+  const captionEl = document.getElementById('reelCaption');
+  if (!captionEl) return;
+
+  if (loadingEl) loadingEl.style.display = 'block';
+  captionEl.style.display = 'none';
+  captionEl.value = '';
+
+  try {
+    const { token } = await chrome.storage.local.get('token');
+    const v = job.vehicle || {};
+    const res = await fetch(`${API_BASE}/listings/generate-fb-post-caption`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({
+        year:     v.year    || null,
+        make:     v.make    || null,
+        model:    v.model   || null,
+        trim:     v.trim    || null,
+        price:    v.price   || null,
+        mileage:  v.mileage || null,
+        theme:    theme || 'hype',
+        custom_prompt: customPrompt || null,
+        language: userLanguage,
+        post_type: 'reel',
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      captionEl.value = data.caption || '';
+    }
+  } catch {
+    // leave textarea empty — user can type manually
+  } finally {
+    if (loadingEl) loadingEl.style.display = 'none';
+    captionEl.style.display = 'block';
+  }
+}
+
+// Theme button handlers — scoped to the Reel modal.
+document.querySelectorAll('#reelModal .reel-caption-theme-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    reelCurrentTheme = btn.dataset.theme;
+    document.querySelectorAll('#reelModal .reel-caption-theme-btn').forEach(b =>
+      b.classList.toggle('selected', b === btn)
+    );
+    const panel = document.getElementById('reelCustomPromptPanel');
+    if (reelCurrentTheme === 'custom') {
+      openCaptionCustomPanel(panel, (prompt) =>
+        generateReelCaption(reelModalJob, null, prompt));
+    } else {
+      if (panel) panel.style.display = 'none';
+      if (reelModalJob) generateReelCaption(reelModalJob, reelCurrentTheme);
+    }
+  });
+});
+
 // ── Marketplace Modal ─────────────────────────────────────────
 let mpModalJob       = null;
 let mpSelectedPhotos = new Set();
@@ -3221,6 +3326,53 @@ async function init() {
     }
   };
 
+  // Reel modal close handlers
+  document.getElementById("closeReelModal").onclick = () => {
+    document.getElementById("reelModal").style.display = "none";
+  };
+  document.getElementById("closeReelModal2").onclick = () => {
+    document.getElementById("reelModal").style.display = "none";
+  };
+
+  // Reel submit handler
+  document.getElementById("reelSubmitBtn").onclick = async () => {
+    const videoUrl = reelModalJob?.result_url || null;
+    if (!videoUrl) {
+      alert("This ad has no video to post as a Reel.");
+      return;
+    }
+    const caption = document.getElementById("reelCaption")?.value?.trim() || "";
+    // Write caption to real clipboard while we have user gesture context —
+    // the content script will execCommand('paste') into the Lexical editor.
+    if (caption) {
+      try { await navigator.clipboard.writeText(caption); } catch (e) { /* ignore */ }
+    }
+
+    const submitBtn = document.getElementById("reelSubmitBtn");
+    const originalText = submitBtn.textContent;
+    submitBtn.textContent = '⏳ Opening Facebook...';
+    submitBtn.disabled = true;
+
+    try {
+      await chrome.storage.local.set({
+        fb_reel_post: {
+          caption,
+          video_url: videoUrl,
+          job_id: reelModalJob?.id || null,
+          vehicle: reelModalJob?.vehicle,
+          created_at: new Date().toISOString(),
+        },
+      });
+      document.getElementById("reelModal").style.display = "none";
+      chrome.tabs.create({ url: "https://www.facebook.com/?dealersorbit_reel=1" });
+    } catch (err) {
+      console.error('Reel submit error:', err);
+      alert('Failed to open Facebook. Please try again.');
+      submitBtn.textContent = originalText;
+      submitBtn.disabled = false;
+    }
+  };
+
   const { token, user } = await chrome.storage.local.get(["token", "user"]);
 
   // Clear any stuck pending_review on startup
@@ -3496,7 +3648,7 @@ loginBtn.addEventListener("click", async () => {
       console.log('DealersOrbit: Account switch detected, clearing previous user data');
       await chrome.storage.local.remove([
         'pending_review_queue', 'queue',
-        'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
+        'fb_listing', 'fb_post', 'fb_groups_post', 'fb_reel_post', 'fb_posting_history',
         'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
         'dealer_configured', 'config_status', 'subscription_cache',
         'current_generating_vin', 'userLanguage',
@@ -3560,7 +3712,7 @@ logoutBtn.addEventListener("click", async () => {
   await chrome.storage.local.remove([
     'token', 'user', 'subscription_cache',
     'pending_review_queue', 'queue',
-    'fb_listing', 'fb_post', 'fb_groups_post', 'fb_posting_history',
+    'fb_listing', 'fb_post', 'fb_groups_post', 'fb_reel_post', 'fb_posting_history',
     'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
     'dealer_configured', 'config_status',
     'onboarding_card_selector', 'onboarding_detail_url',
@@ -4008,6 +4160,11 @@ function renderUnifiedCard(card) {
                      <button class='btn-small post-groups-btn'
                              data-job-id='${job.id}'
                              style='background:#1b4332;font-size:11px'>👥 Groups</button>
+                     ${job.result_url
+          ? `<button class='btn-small post-reel-btn'
+                             data-job-id='${job.id}'
+                             style='background:#833AB4;font-size:11px'>🎬 Reel</button>`
+          : ""}
                    </div>`;
     } else if (job.status === "failed") {
       badgeClass = "badge-failed";

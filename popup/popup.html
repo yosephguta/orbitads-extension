@@ -771,6 +771,87 @@
     </div>
   </div>
 
+  <!-- Reel Post Modal -->
+  <div class='modal-overlay' id='reelModal' style='display:none'>
+    <div class='modal' style='max-height:90vh;display:flex;flex-direction:column'>
+
+      <!-- Header -->
+      <div class='modal-header'>
+        <div class='modal-title'>🎬 Post as Reel</div>
+        <button class='modal-close' id='closeReelModal'>✕</button>
+      </div>
+
+      <!-- Scrollable content -->
+      <div style='overflow-y:auto;flex:1;padding-bottom:8px'>
+
+        <!-- Video preview -->
+        <video id='reelVideoPreview' controls playsinline style='
+          width:100%;
+          max-height:280px;
+          border-radius:8px;
+          background:#000;
+          margin-bottom:12px;
+          display:block;
+        '></video>
+
+        <p style='font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.4'>
+          Only the video is posted. Facebook turns a standalone video into a Reel automatically.
+        </p>
+
+        <!-- Caption themes -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 8px'>
+          Caption theme
+        </p>
+        <div style='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px'>
+          <button class='fb-caption-theme-btn reel-caption-theme-btn' data-theme='hype'>🔥 Hype</button>
+          <button class='fb-caption-theme-btn reel-caption-theme-btn' data-theme='casual'>😎 Casual</button>
+          <button class='fb-caption-theme-btn reel-caption-theme-btn' data-theme='luxury'>💎 Luxury</button>
+          <button class='fb-caption-theme-btn reel-caption-theme-btn' data-theme='outdoorsy'>🏔️ Outdoorsy</button>
+          <button class='fb-caption-theme-btn reel-caption-theme-btn' data-theme='family'>👨‍👩‍👧 Family</button>
+          <button class='fb-caption-theme-btn reel-caption-theme-btn' data-theme='custom'>✏️ Custom</button>
+        </div>
+
+        <!-- Custom prompt panel (shown when Custom theme is selected) -->
+        <div id='reelCustomPromptPanel' style='display:none;margin-bottom:12px'></div>
+
+        <!-- Caption text box -->
+        <p style='font-size:12px;font-weight:700;color:#374151;margin:0 0 6px'>
+          Caption <span style='font-weight:400;color:#9ca3af'>(edit if needed)</span>
+        </p>
+        <div id='reelCaptionLoading' class='caption-loading' style='display:none'>
+          <span class='generation-spinner'></span>Generating caption...
+        </div>
+        <textarea id='reelCaption' style='
+          width:100%;
+          min-height:120px;
+          padding:10px;
+          border:1px solid #d1d5db;
+          border-radius:8px;
+          font-size:13px;
+          font-family:inherit;
+          resize:vertical;
+          outline:none;
+          line-height:1.5;
+          box-sizing:border-box;
+        ' placeholder='Caption will appear here...'></textarea>
+
+      </div>
+
+      <!-- Footer actions -->
+      <div style='
+        display:flex;
+        gap:8px;
+        padding-top:12px;
+        border-top:1px solid #f3f4f6;
+        margin-top:8px;
+      '>
+        <button class='btn-secondary' id='closeReelModal2' style='flex:1'>Cancel</button>
+        <button class='btn-primary' id='reelSubmitBtn' style='flex:1'>🎬 Post Reel</button>
+      </div>
+
+    </div>
+  </div>
+
   <!-- Marketplace Post Modal -->
   <div class='modal-overlay' id='marketplaceModal' style='display:none'>
     <div class='modal' style='max-height:90vh;display:flex;flex-direction:column'>

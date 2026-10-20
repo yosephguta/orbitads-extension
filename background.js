@@ -690,9 +690,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "RUN_SOLD_CHECK") {
-    runDailySoldCheck(true)
+  // User-run "Check Listings" (sold + price changes). Opens one background
+  // window/tab and navigates it listing→listing. Streams progress via
+  // CHECK_LISTINGS_PROGRESS messages + chrome.storage.local.check_listings_progress.
+  if (message.type === "CHECK_LISTINGS_START") {
+    runCheckListings()
       .then(result => sendResponse(result))
+      .catch(() => sendResponse({ error: "exception" }));
+    return true;
+  }
+
+  if (message.type === "CHECK_LISTINGS_CANCEL") {
+    _checkCancel = true;
+    sendResponse({ cancelling: true });
+    return true;
+  }
+
+  // Back-compat: old popup builds still send RUN_SOLD_CHECK.
+  if (message.type === "RUN_SOLD_CHECK") {
+    runCheckListings()
+      .then(result => sendResponse({ sold_ids: result.sold || [] }))
       .catch(() => sendResponse({ sold_ids: [] }));
     return true;
   }
@@ -2895,6 +2912,7 @@ const GENERIC_SOLD_INDICATORS = [
   'this vehicle has been sold',
   'vehicle is no longer available',
   'vehicle sold',
+  'vehicle not available',   // JBA "Oops, vehicle not available" sold page
   // 'no longer available' removed — too broad; matches bot challenges and generic error pages
   // 'page not found' removed — too broad; matches any nav element, error page, or challenge page
 ];
@@ -2930,8 +2948,10 @@ function getSoldIndicatorsForUrl(url) {
         'listing is no longer active',
       ];
     }
+    // Dealer sites: a configured list PLUS the generic dealer-sold phrases
+    // (so "vehicle not available" etc. are caught even for configured dealers).
     const config = DEALERSHIP_CONFIGS[domain] || DEALERSHIP_CONFIGS['www.' + domain];
-    return config?.sold_indicators || GENERIC_SOLD_INDICATORS;
+    return [...new Set([...(config?.sold_indicators || []), ...GENERIC_SOLD_INDICATORS])];
   } catch {
     return GENERIC_SOLD_INDICATORS;
   }
@@ -2968,6 +2988,12 @@ async function checkListingUrl(url) {
         return { sold: true, reason: 'cargurus: redirected away from VDP' };
       }
 
+      // DEALER sites: a sold VDP often redirects UP to a generic inventory/search/
+      // home page (e.g. ag auto: /inventory/audi/q3/nv-3012/ → /inventory/).
+      if (dealerRedirectedToList(url, resp.url)) {
+        return { sold: true, reason: 'dealer: redirected to inventory/list page' };
+      }
+
       const text = await resp.text();
       const lowerText = text.toLowerCase();
 
@@ -2992,8 +3018,373 @@ async function checkListingUrl(url) {
   }
 }
 
-// ── Daily sold vehicle checker ────────────────────────────────
-// force=true bypasses the 6-hour throttle (used by popup manual check)
+// ══ Check Listings engine (user-run sold + price checker) ══════════════════════
+// Opens ONE background window with ONE tab and navigates that tab from listing to
+// listing in the user's REAL browser (their cookies + Cloudflare clearance), so
+// Cars.com/CarGurus — which 403 the cookieless SW fetch — can be read. Dealer
+// sites stay on the plain fetch (their 410/404 status is the reliable sold signal,
+// invisible from inside a tab). A challenge/block is NEVER treated as sold.
+
+let _checkCancel  = false;
+let _checkRunning = false;   // guards against a second concurrent run
+let _checkTabId   = null;
+// Max listings checked per run — bounds the Cars.com/CarGurus request burst so a
+// user's IP isn't rate-limited/flagged, and keeps runs short. Repeated runs
+// rotate through the rest (least-recently-checked first).
+const MAX_PER_RUN = 10;
+
+// Resolve a dealer site's detail-page selectors (backend config → hardcoded).
+async function resolveDetailSelectors(domain) {
+  let sel = {};
+  try {
+    const cfg = await fetchDealerConfigForDomain(domain);
+    if (cfg?.found && cfg.config?.detail_page) sel = cfg.config.detail_page;
+  } catch (_) {}
+  if (!Object.keys(sel).length) {
+    const hc = getConfigForDomain(domain);
+    if (hc?.detail_page) sel = hc.detail_page;
+  }
+  return sel;
+}
+
+async function navigateAndWait(tabId, url) {
+  await chrome.tabs.update(tabId, { url });
+  await waitForTabLoad(tabId);
+}
+
+// ── Injected (self-contained) per-source detectors ────────────────────────────
+// Return { status: 'sold' | 'available' | 'couldnt_check', price?, title?, reason? }
+
+async function detectCarGurusStatus() {
+  // CarGurus serves the real VDP (available), a 404 "already left the lot" page
+  // (sold), or a Cloudflare challenge (title "cargurus.com" + empty body).
+  async function waitClear(max = 12000) {
+    const start = Date.now();
+    while (Date.now() - start < max) {
+      const t = (document.title || '');
+      const blocked = /just a moment/i.test(t) || /attention required/i.test(t) || t === 'cargurus.com';
+      const len = (document.body?.innerText || '').length;
+      if (!blocked && len > 300) return true;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return false;
+  }
+  if (!(await waitClear())) return { status: 'couldnt_check', reason: 'cloudflare' };
+  const low = (document.body?.innerText || '').toLowerCase();
+  if (low.includes('already left the lot') || low.includes('we found similar cars for you'))
+    return { status: 'sold', reason: 'left the lot' };
+  const h1 = document.querySelector('h1[data-cg-ft="vdp-listing-title"]');
+  if (h1 && h1.innerText.trim()) {
+    let price = null;
+    const pe = document.querySelector('[class*="priceContainer"] h2, [class*="price_"] h2');
+    if (pe) { const m = pe.textContent.match(/\$[\d,]+/); if (m) price = m[0]; }
+    const vin = document.querySelector('[data-cg-ft="vin"] span:last-child')?.textContent?.trim()
+             || (document.body.innerText.match(/\b[A-HJ-NPR-Z0-9]{17}\b/) || [])[0] || null;
+    return { status: 'available', price, vin, title: h1.innerText.trim() };
+  }
+  return { status: 'couldnt_check', reason: 'no title' };
+}
+
+async function detectCarsDotComStatus() {
+  // Cars.com (Phoenix LiveView) renders async. Sold = a banner "No longer listed /
+  // Sorry, this vehicle is no longer available" (the URL does NOT redirect away).
+  // Cloudflare: "Just a moment" / "Performing security verification" / "you have been blocked".
+  async function waitClear(max = 15000) {
+    const start = Date.now();
+    while (Date.now() - start < max) {
+      const t = (document.title || '').toLowerCase();
+      const low = (document.body?.innerText || '').toLowerCase();
+      const blocked = t.includes('just a moment') || t.includes('attention required') ||
+                      low.includes('performing security verification') ||
+                      low.includes('you have been blocked') ||
+                      low.includes('unable to access');
+      if (!blocked && (document.body?.innerText || '').length > 300) return true;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    return false;
+  }
+  if (!(await waitClear())) return { status: 'couldnt_check', reason: 'cloudflare/block' };
+  // Poll for the VDP (or the sold banner) to render.
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    const low = (document.body?.innerText || '').toLowerCase();
+    if (low.includes('no longer listed') || low.includes('no longer available')) break;
+    const h1 = document.querySelector('h1');
+    if (h1 && /\b(19|20)\d{2}\b/.test(h1.innerText || '')) break;
+    if (document.querySelector('.price-stack-display, h2.list-price')) break;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  const low = (document.body?.innerText || '').toLowerCase();
+  if (low.includes('no longer listed') || low.includes('no longer available') ||
+      low.includes('this vehicle has been sold'))
+    return { status: 'sold', reason: 'no longer listed' };
+  let price = null;
+  const tf = document.querySelector('.price-stack-display tfoot td:last-child');
+  if (tf) { const m = tf.textContent.match(/\$[\d,]+/); if (m) price = m[0]; }
+  if (!price) { const lp = document.querySelector('h2.list-price'); if (lp) { const m = lp.textContent.match(/\$[\d,]+/); if (m) price = m[0]; } }
+  const h1 = document.querySelector('h1');
+  const title = h1 ? h1.innerText.trim() : '';
+  const vin = (document.body.innerText.match(/\b[A-HJ-NPR-Z0-9]{17}\b/) || [])[0] || null;
+  if (price || (title && /\b(19|20)\d{2}\b/.test(title)))
+    return { status: 'available', price, vin, title };
+  return { status: 'couldnt_check', reason: 'no vdp' };
+}
+
+// Did a dealer VDP redirect UP to a generic inventory/search/home page?
+// (ag auto: /inventory/audi/q3/nv-3012/ → /inventory/). Shared by the HTTP-level
+// check (checkListingUrl) and the in-tab final-URL check (catches JS redirects).
+function dealerRedirectedToList(reqUrl, finalUrl) {
+  try {
+    const reqPath = new URL(reqUrl).pathname.replace(/\/+$/, '');
+    const finPath = new URL(finalUrl).pathname.replace(/\/+$/, '');
+    if (finPath !== reqPath &&
+        (reqPath.startsWith(finPath + '/') || finPath === '' ||
+         /\/(inventory|used-inventory|new-inventory|used|search|vehicles|cars)$/i.test(finPath))) {
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+// Injected: lightweight page signals for the loaded tab — is it a bot-challenge/
+// empty page, and does any sold-indicator text appear? (Catches JS-rendered sold
+// messages the HTTP fetch didn't see.)
+function pageSoldSignals(indicators) {
+  const low = ((document.body && document.body.innerText) || '').toLowerCase();
+  const title = (document.title || '').toLowerCase();
+  const BOT = ['just a moment', 'attention required', 'checking your browser',
+               'enable javascript and cookies', 'datadome', 'performing security verification',
+               'you have been blocked', 'access denied'];
+  const blocked = low.length < 200 || BOT.some(m => low.includes(m) || title.includes(m));
+  const soldText = (indicators || []).some(i => low.includes(i));
+  return { blocked, soldText };
+}
+
+// VIN cross-reference — the authoritative "available" gate. Runs ONLY after the
+// explicit sold signals (status / redirect / sold-text) have already been ruled
+// out, so a sold page that still shows the VIN can't produce a false "available".
+//   VIN matches stored  → available (price for price-change)
+//   a DIFFERENT VIN      → sold (page now shows another car / inventory)
+//   no VIN found         → couldn't check (conservative — selector/render hiccup; retries)
+// Listings with no stored VIN fall back to price as the proof-of-life.
+function finalizeByVin(listing, scrapedVin, price, source) {
+  const expected = (listing.vin || '').toUpperCase().trim();
+  const scraped  = (scrapedVin || '').toUpperCase().trim();
+  if (!expected) {
+    return price ? { status: 'available', source, price }
+                 : { status: 'couldnt_check', source, reason: 'no stored vin & no price' };
+  }
+  if (scraped && scraped === expected) return { status: 'available', source, price, vin: scraped };
+  if (scraped && scraped !== expected) return { status: 'sold', source, reason: 'vin mismatch (different car on page)' };
+  return { status: 'couldnt_check', source, reason: 'vin not found on page' };
+}
+
+// Check one listing.
+//   Dealer: fast HTTP sold path (404/410/redirect/sold-text), else confirm in a
+//   real tab (JS-redirect + sold-text + VIN-match).
+//   Cars/CarGurus: tab detector (CF-aware, text sold), then VIN cross-check.
+async function checkOneListing(tabId, listing) {
+  const url = listing.listing_url;
+  let host = '';
+  try { host = new URL(url).hostname; } catch { return { status: 'couldnt_check', reason: 'bad url' }; }
+  const isCars = host.includes('cars.com');
+  const isCg   = host.includes('cargurus.com');
+
+  if (!isCars && !isCg) {
+    // DEALER — HTTP fast sold path first (sees 404/410, which the tab can't).
+    const r = await checkListingUrl(url);
+    if (r.sold) return { status: 'sold', source: 'dealer', reason: r.reason };
+    // Inconclusive (200 active / 403 / challenge / error) → confirm in a real tab.
+    try {
+      await navigateAndWait(tabId, url);
+      await sleep(3500);  // let any client-side redirect settle before we read
+      const finalUrl = (await chrome.tabs.get(tabId))?.url || url;
+      if (dealerRedirectedToList(url, finalUrl))
+        return { status: 'sold', source: 'dealer', reason: 'redirected off VDP' };
+
+      const indicators = getSoldIndicatorsForUrl(url);
+      const sig = (await chrome.scripting.executeScript({
+        target: { tabId }, func: pageSoldSignals, args: [indicators],
+      }))?.[0]?.result || {};
+      if (sig.blocked)  return { status: 'couldnt_check', source: 'dealer', reason: 'blocked/empty page' };
+      if (sig.soldText) return { status: 'sold', source: 'dealer', reason: 'sold text' };
+
+      const selectors = await resolveDetailSelectors(host);
+      const data = (await chrome.scripting.executeScript({
+        target: { tabId }, func: extractDetailPageData, args: [selectors],
+      }))?.[0]?.result || {};
+      return finalizeByVin(listing, data.vin, data.price, 'dealer');
+    } catch (_) {
+      return { status: 'couldnt_check', source: 'dealer', reason: 'tab error' };
+    }
+  }
+
+  // CARS / CARGURUS — tab detector (CF-aware, text sold), then VIN cross-check.
+  try {
+    await navigateAndWait(tabId, url);
+    const out = (await chrome.scripting.executeScript({
+      target: { tabId }, func: isCg ? detectCarGurusStatus : detectCarsDotComStatus,
+    }))?.[0]?.result || { status: 'couldnt_check', reason: 'no result' };
+    const source = isCg ? 'cargurus' : 'cars';
+    if (out.status === 'available') return finalizeByVin(listing, out.vin, out.price, source);
+    out.source = source;
+    return out;
+  } catch (e) {
+    return { status: 'couldnt_check', source: isCg ? 'cargurus' : 'cars', reason: 'inject error' };
+  }
+}
+
+async function updateBaselinePrice(token, listingId, price) {
+  try {
+    await fetch(`${API_BASE}/listings/${listingId}/price`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ price }),
+    });
+  } catch (_) {}
+}
+
+const _priceToInt = (p) => {
+  const m = String(p || '').match(/[\d,]+/);
+  if (!m) return null;
+  const n = parseInt(m[0].replace(/,/g, ''), 10);
+  return Number.isFinite(n) ? n : null;
+};
+
+async function runCheckListings() {
+  if (_checkRunning) return { error: 'already_running' };
+  _checkRunning = true;
+  _checkCancel = false;
+  try {
+  const { token } = await chrome.storage.local.get('token');
+  if (!token) return { error: 'no_token' };
+
+  let listings = [];
+  try {
+    const r = await fetch(`${API_BASE}/listings/`, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (r.status === 401) { await handleExpiredToken(token); return { error: 'unauthorized' }; }
+    if (!r.ok) return { error: 'fetch_failed' };
+    listings = await r.json();
+  } catch { return { error: 'fetch_failed' }; }
+
+  const checkable = listings.filter(l => l.fb_posted && !l.is_sold && l.listing_url);
+  const totalCheckable = checkable.length;
+
+  // Cap each run at MAX_PER_RUN and prioritize the LEAST-recently-checked (never
+  // checked first). This bounds the request burst to Cars.com/CarGurus (avoids
+  // rate-limiting / IP flagging) and keeps each run short enough that the MV3
+  // service worker isn't suspended mid-run. Repeated runs rotate through all of
+  // them (each checked listing gets last_checked_at = now, sinking to the back).
+  checkable.sort((a, b) => {
+    const av = a.last_checked_at ? Date.parse(a.last_checked_at) : 0;
+    const bv = b.last_checked_at ? Date.parse(b.last_checked_at) : 0;
+    return av - bv;
+  });
+  const toCheck = checkable.slice(0, MAX_PER_RUN);
+  const total = toCheck.length;
+  const remaining = totalCheckable - total;
+  const setProgress = (p) => chrome.storage.local.set({ check_listings_progress: p });
+
+  if (total === 0) {
+    await setProgress({ running: false, total: 0, done: 0, finished: true, cancelled: false });
+    await chrome.storage.local.set({ last_listings_check: Date.now() });
+    return { total: 0, total_checkable: 0, remaining: 0, sold: [], price_changes: [], couldnt_check: [] };
+  }
+
+  // Open ONE background tab in the user's current window (inactive — stays out
+  // of the way, keeps their cookies/Cloudflare clearance) and navigate it from
+  // listing to listing — same approach as the import scraper. Avoids popping a
+  // whole new window (which maximized on macOS).
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: 'about:blank', active: false });
+  } catch { return { error: 'tab_failed' }; }
+  _checkTabId = tab.id;
+  const tabId = tab.id;
+  if (!tabId) { _checkTabId = null; return { error: 'tab_failed' }; }
+
+  const soldIds = [], checkedIds = [], priceChanges = [], couldnt = [];
+
+  for (let i = 0; i < toCheck.length; i++) {
+    if (_checkCancel) break;
+    const listing = toCheck[i];
+    const label = `${listing.year || ''} ${listing.make || ''} ${listing.model || ''}`.trim();
+    await setProgress({ running: true, total, done: i, current: label, cancelled: false });
+    try { chrome.runtime.sendMessage({ type: 'CHECK_LISTINGS_PROGRESS', total, done: i, current_index: i + 1, current: label }); } catch (_) {}
+
+    let result;
+    try { result = await checkOneListing(tabId, listing); }
+    catch { result = { status: 'couldnt_check', reason: 'exception' }; }
+
+    if (result.status === 'sold') {
+      checkedIds.push(listing.id);
+      soldIds.push(listing.id);
+    } else if (result.status === 'available') {
+      checkedIds.push(listing.id);
+      const newN = _priceToInt(result.price);
+      if (result.price && newN) {
+        const hasBaseline = listing.price != null && String(listing.price).trim() !== '';
+        if (!hasBaseline) {
+          await updateBaselinePrice(token, listing.id, result.price);   // adopt silently
+        } else {
+          const oldN = _priceToInt(listing.price);
+          if (oldN && newN !== oldN) {
+            priceChanges.push({ id: listing.id, title: label, old: listing.price, new: result.price });
+            await updateBaselinePrice(token, listing.id, result.price); // notify + auto-rebaseline
+          }
+        }
+      }
+    } else {
+      couldnt.push(listing.id);   // NOT counted as checked → last_checked_at not bumped
+    }
+
+    if (i < toCheck.length - 1 && !_checkCancel) await sleep(4000);
+  }
+
+  const cancelled = _checkCancel;
+  try { if (_checkTabId) await chrome.tabs.remove(_checkTabId); } catch (_) {}
+  _checkTabId = null;
+
+  if (checkedIds.length) {
+    try {
+      await fetch(`${API_BASE}/listings/update-sold-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ sold_ids: soldIds, checked_ids: checkedIds }),
+      });
+    } catch (_) {}
+  }
+
+  if (soldIds.length) {
+    const { sold_notifications = [] } = await chrome.storage.local.get('sold_notifications');
+    await chrome.storage.local.set({ sold_notifications: [...new Set([...sold_notifications, ...soldIds])] });
+    chrome.action.setBadgeText({ text: '🔴' });
+    chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+  }
+  if (priceChanges.length) {
+    const { price_notifications = [] } = await chrome.storage.local.get('price_notifications');
+    const byId = {};
+    [...price_notifications, ...priceChanges].forEach(p => { byId[p.id] = p; });
+    await chrome.storage.local.set({ price_notifications: Object.values(byId) });
+  }
+
+  await chrome.storage.local.set({
+    last_listings_check: Date.now(),
+    check_listings_progress: { running: false, total, done: checkedIds.length + couldnt.length, finished: true, cancelled },
+  });
+
+  return { total, total_checkable: totalCheckable, remaining, cancelled,
+           sold: soldIds, price_changes: priceChanges, couldnt_check: couldnt };
+  } finally {
+    // Always clear the run guard + leave no orphan tab, even on an early return/throw.
+    _checkRunning = false;
+    try { if (_checkTabId) { await chrome.tabs.remove(_checkTabId); _checkTabId = null; } } catch (_) {}
+  }
+}
+
+// ── DEPRECATED: old automatic sold checker (no longer called) ──────────────
+// Superseded by runCheckListings() (user-run Check Listings). Kept temporarily
+// for reference; nothing invokes it. Do not wire new code to it.
 async function runDailySoldCheck(force = false) {
   const { token, last_sold_check } =
     await chrome.storage.local.get(['token', 'last_sold_check']);
@@ -3083,9 +3474,9 @@ async function runDailySoldCheck(force = false) {
   }
 }
 
-// Run on startup and every 6 hours
-runDailySoldCheck();
-setInterval(runDailySoldCheck, 6 * 60 * 60 * 1000);
+// NOTE: the automatic 6-hour sold check + startup run were REMOVED. Checking is
+// now user-initiated only ("Check Listings" → CHECK_LISTINGS_START → runCheckListings).
+// This also removes the post-sleep background 401s that caused the session-expired bug.
 
 async function saveQueue(localQueue) {
   // Re-read storage and merge so we never overwrite jobs added by concurrent addToQueue calls.

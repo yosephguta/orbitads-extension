@@ -74,9 +74,9 @@
         <div class="stat-value" id="statFbPosted">0</div>
         <div class="stat-label">FB posted</div>
       </div>
-      <div class="stat stat-sold" id="soldCheckerStat" style="cursor:pointer" title="Click to check sold vehicles">
+      <div class="stat stat-sold" id="soldCheckerStat" style="cursor:pointer" title="Check your listings for sold status + price changes">
         <div class="stat-value" id="statSoldCount">✓</div>
-        <div class="stat-label">Sold check</div>
+        <div class="stat-label">Check listings</div>
       </div>
     </div>
 
@@ -85,6 +85,7 @@
 
     <!-- Notifications -->
     <div id="soldBanner" class="sold-banner" style="display:none"></div>
+    <div id="checkReminderBanner" class="resume-banner" style="display:none"></div>
     <div id="staleBanner" class="resume-banner" style="display:none"></div>
     <div id="reviewBanner" style="display:none;background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#92400e;line-height:1.4;">
       ⚠️ Your site configuration is still under review. You can start importing vehicles now — it may have minor issues but will be fully optimized by tomorrow.
@@ -617,6 +618,65 @@
       </div>
     </div>
 
+    <div class="settings-section" id="videoStyleSection">
+      <div class="settings-section-title">🎬 Video Style</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:10px">
+        Controls how your vertical (9:16) videos look — the band color behind your
+        photos, the text at the top, and the call-to-action at the bottom.
+      </div>
+
+      <!-- Band color -->
+      <div class="form-group">
+        <label>Band color</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="color" id="videoBandColorInput" value="#0d1f3c"
+                 style="width:48px;height:34px;padding:2px;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer">
+          <span id="videoBandColorHex" style="font-size:12px;color:#6b7280;font-family:monospace">#0d1f3c</span>
+          <button type="button" id="videoBandColorReset"
+                  style="margin-left:auto;font-size:11px;color:#6b7280;background:none;border:none;cursor:pointer;text-decoration:underline">Reset to navy</button>
+        </div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:3px">
+          Fills the areas above and below your photo.
+        </div>
+      </div>
+
+      <!-- Top text -->
+      <div class="form-group">
+        <label>Top text</label>
+        <select id="videoTopTextMode"
+                style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px">
+          <option value="hook_then_vehicle">Hook, then vehicle name (recommended)</option>
+          <option value="vehicle_only">Vehicle name only</option>
+          <option value="custom">Custom text</option>
+        </select>
+        <input type="text" id="videoTopCustomText" maxlength="200"
+               placeholder="e.g. Fall Clearance Event"
+               style="display:none;margin-top:8px">
+        <div style="font-size:11px;color:#9ca3af;margin-top:3px">
+          "Hook, then vehicle name" shows your script's opening line for the first
+          few seconds, then the year/make/model.
+        </div>
+      </div>
+
+      <!-- CTA -->
+      <div class="form-group">
+        <label>Call to action (bottom)</label>
+        <select id="videoCtaMode"
+                style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px">
+          <option value="phone">Call or text my number</option>
+          <option value="dm">DM me for details</option>
+          <option value="custom">Custom text</option>
+        </select>
+        <input type="text" id="videoCtaCustomText" maxlength="200"
+               placeholder="e.g. Stop by today!"
+               style="display:none;margin-top:8px">
+        <div id="videoCtaPhoneNote" style="font-size:11px;color:#9ca3af;margin-top:3px"></div>
+      </div>
+
+      <button class="btn-primary" id="saveVideoStyleBtn">Save Video Style</button>
+      <div class="settings-saved" id="videoStyleSaved" style="display:none">✓ Saved</div>
+    </div>
+
     <div class="settings-section">
       <div class="settings-section-title">Subscription</div>
       <div class="settings-row-item">
@@ -680,7 +740,7 @@
   <div class="modal-overlay" id="soldModal" style="display:none">
     <div class="modal">
       <div class="modal-header">
-        <div class="modal-title">🚨 Sold Vehicle Check</div>
+        <div class="modal-title">🔍 Check Listings</div>
         <button class="modal-close" id="closeSoldModal">✕</button>
       </div>
       <div id="soldModalContent">
@@ -784,13 +844,16 @@
       <!-- Scrollable content -->
       <div style='overflow-y:auto;flex:1;padding-bottom:8px'>
 
-        <!-- Video preview -->
+        <!-- Video preview — width:auto + object-fit:contain so the vertical
+             9:16 video is letterboxed (never stretched/cropped), centered. -->
         <video id='reelVideoPreview' controls playsinline style='
-          width:100%;
-          max-height:280px;
+          width:auto;
+          max-width:100%;
+          max-height:420px;
+          object-fit:contain;
           border-radius:8px;
           background:#000;
-          margin-bottom:12px;
+          margin:0 auto 12px;
           display:block;
         '></video>
 

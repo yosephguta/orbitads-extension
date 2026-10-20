@@ -249,141 +249,309 @@ let onboardingState = {
 // ... rest of the file (all functions and event listeners)
 // ... init() call stays at the very bottom
 
-// Sold checker stat click
+// "Check listings" stat click — opens the modal to a START screen (does NOT
+// auto-run; the user clicks "Check Listings" to begin).
 soldCheckerStat?.addEventListener("click", async () => {
   const modal = document.getElementById("soldModal");
   if (!modal) return;
   modal.style.display = "flex";
-
-  // Attach close handler here so modal exists
   document.getElementById("closeSoldModal").onclick = () => {
+    // Closing the modal does NOT stop an in-progress check — it keeps running
+    // in the background window; reopen to see results.
     modal.style.display = "none";
   };
-
-  await loadSoldModalContent();
+  await renderCheckStart();
 });
 
-// Dismiss sold listing (X button inside sold modal)
-document.getElementById("soldModalContent")?.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".clear-sold-btn");
-  if (!btn) return;
+// Can also open the modal from the dashboard reminder "Check now" button.
+function openCheckListingsModal() {
+  const modal = document.getElementById("soldModal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  document.getElementById("closeSoldModal").onclick = () => { modal.style.display = "none"; };
+  renderCheckStart();
+}
 
-  const listingId = btn.dataset.listingId;
-  const { token } = await chrome.storage.local.get("token");
-  if (!token) return;
-
-  btn.textContent = "...";
-  btn.disabled = true;
-
-  try {
-    const resp = await apiFetch(`${API_BASE}/listings/${listingId}/clear-sold`, {
-      method: "PATCH",
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    if (!resp.ok) throw new Error("Failed");
-
-    // Also clear from local sold_notifications
-    const { sold_notifications = [] } = await chrome.storage.local.get("sold_notifications");
-    await chrome.storage.local.set({
-      sold_notifications: sold_notifications.filter(id => String(id) !== String(listingId)),
-    });
-
-    // Refresh modal content
-    await loadSoldModalContent();
-  } catch (err) {
-    btn.textContent = "✕";
-    btn.disabled = false;
-    console.error("DealersOrbit: Failed to clear sold flag:", err);
+// Live progress during a run ("Checking 3 of 12…").
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "CHECK_LISTINGS_PROGRESS") {
+    const t = document.getElementById("checkProgressText");
+    const s = document.getElementById("checkProgressSub");
+    if (t) t.textContent = `Checking ${msg.current_index} of ${msg.total}…`;
+    if (s) s.textContent = msg.current || "";
   }
 });
 
-
-async function loadSoldModalContent() {
-  const content = document.getElementById("soldModalContent");
-  content.innerHTML = `<p style="color:#6b7280;font-size:13px;text-align:center">
-    🔍 Checking listings...</p>`;
-
+// Delegated handler for every button inside the Check Listings modal.
+document.getElementById("soldModalContent")?.addEventListener("click", async (e) => {
   const { token } = await chrome.storage.local.get("token");
-  if (!token) {
-    content.innerHTML = `<p style="color:#dc2626">Please sign in first.</p>`;
+
+  // Start the check
+  if (e.target.closest("#startCheckBtn")) {
+    await runCheckFlow();
+    return;
+  }
+  // Cancel a running check
+  if (e.target.closest("#cancelCheckBtn")) {
+    const b = e.target.closest("#cancelCheckBtn");
+    b.textContent = "Cancelling…"; b.disabled = true;
+    chrome.runtime.sendMessage({ type: "CHECK_LISTINGS_CANCEL" });
+    return;
+  }
+  // Run again / back to start
+  if (e.target.closest("#runAgainBtn")) {
+    await renderCheckStart();
     return;
   }
 
-  try {
-    // Get listings from backend
-    const resp = await apiFetch(`${API_BASE}/listings/`, {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    if (!resp.ok) throw new Error("Failed");
-
-    const listings = await resp.json();
-    const posted = listings.filter(l => l.fb_posted);
-    const sold = listings.filter(l => l.is_sold);
-    const active = posted.filter(l => !l.is_sold);
-
-    if (posted.length === 0) {
-      content.innerHTML = `
-        <p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">
-          No Facebook listings found yet.<br>
-          Post a vehicle to Facebook first.
-        </p>`;
-      return;
-    }
-
-    // Trigger a fresh check via background script (runs in browser context — no IP blocking)
-    if (active.length > 0) {
-      await new Promise(resolve => chrome.runtime.sendMessage({ type: 'RUN_SOLD_CHECK' }, resolve));
-
-      // Refresh listings so last_checked_at and is_sold are up to date
-      const refreshResp = await apiFetch(`${API_BASE}/listings/`, {
-        headers: { "Authorization": `Bearer ${token}` },
+  // "Done" — I've removed it from Facebook (stops checking it).
+  const clearBtn = e.target.closest(".clear-sold-btn");
+  if (clearBtn && token) {
+    const id = clearBtn.dataset.listingId;
+    clearBtn.textContent = "…"; clearBtn.disabled = true;
+    try {
+      const r = await apiFetch(`${API_BASE}/listings/${id}/clear-sold`, {
+        method: "PATCH", headers: { "Authorization": `Bearer ${token}` },
       });
-      if (refreshResp.ok) {
-        const refreshed = await refreshResp.json();
-        content.innerHTML = renderSoldModalContent(refreshed);
-        updateSoldStat(refreshed);
-        return;
-      }
-    }
+      if (!r.ok) throw new Error();
+      await removeNotif("sold_notifications", id);
+      await renderCheckStart();
+    } catch { clearBtn.textContent = "✓ Done"; clearBtn.disabled = false; }
+    return;
+  }
 
-    content.innerHTML = renderSoldModalContent(listings);
-    updateSoldStat(listings);
+  // "Not sold" — the checker got it wrong; move back to active + resume checking.
+  const notSoldBtn = e.target.closest(".not-sold-btn");
+  if (notSoldBtn && token) {
+    const id = notSoldBtn.dataset.listingId;
+    notSoldBtn.textContent = "…"; notSoldBtn.disabled = true;
+    try {
+      const r = await apiFetch(`${API_BASE}/listings/${id}/not-sold`, {
+        method: "PATCH", headers: { "Authorization": `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error();
+      await removeNotif("sold_notifications", id);
+      await renderCheckStart();
+    } catch { notSoldBtn.textContent = "Not sold"; notSoldBtn.disabled = false; }
+    return;
+  }
 
-  } catch (err) {
-    content.innerHTML = `<p style="color:#dc2626;font-size:13px">
-      Failed to check listings. Please try again.</p>`;
+  // "Got it" — dismiss a price-change notification (baseline already updated).
+  const dismissPriceBtn = e.target.closest(".dismiss-price-btn");
+  if (dismissPriceBtn) {
+    await removeNotif("price_notifications", dismissPriceBtn.dataset.listingId);
+    await renderCheckStart();
+    return;
+  }
+
+  // "Wrong price" — correct a mis-scraped price (manual override).
+  const wrongPriceBtn = e.target.closest(".wrong-price-btn");
+  if (wrongPriceBtn && token) {
+    const id = wrongPriceBtn.dataset.listingId;
+    const entered = window.prompt("Enter the correct price for this vehicle (e.g. 30995):");
+    if (entered == null) return;
+    const clean = entered.trim();
+    if (!clean) return;
+    const formatted = clean.startsWith("$") ? clean : "$" + clean.replace(/[^\d.,]/g, "");
+    try {
+      const r = await apiFetch(`${API_BASE}/listings/${id}/price`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ price: formatted }),
+      });
+      if (!r.ok) throw new Error();
+      await removeNotif("price_notifications", id);
+      await renderCheckStart();
+    } catch { /* leave as-is */ }
+    return;
+  }
+});
+
+// Remove one id from a local notification array in chrome.storage.local.
+async function removeNotif(key, id) {
+  const data = await chrome.storage.local.get(key);
+  const arr = data[key] || [];
+  const filtered = key === "price_notifications"
+    ? arr.filter(p => String(p.id) !== String(id))
+    : arr.filter(x => String(x) !== String(id));
+  await chrome.storage.local.set({ [key]: filtered });
+  if (key === "sold_notifications" && filtered.length === 0) {
+    chrome.action.setBadgeText({ text: "" });
   }
 }
 
-function renderSoldModalContent(listings) {
-  const sold     = listings.filter(l => l.is_sold);
-  const active   = listings.filter(l => l.fb_posted && !l.is_sold);
-  const unchecked = listings.filter(l => l.fb_posted && !l.last_checked_at);
 
+// START screen: explains the run (N listings, est time, background window) and
+// shows the latest results below. Does NOT auto-run.
+async function renderCheckStart() {
+  const content = document.getElementById("soldModalContent");
+  content.innerHTML = `<p style="color:#6b7280;font-size:13px;text-align:center">Loading…</p>`;
+
+  const { token } = await chrome.storage.local.get("token");
+  if (!token) { content.innerHTML = `<p style="color:#dc2626">Please sign in first.</p>`; return; }
+
+  let listings = [];
+  try {
+    const resp = await apiFetch(`${API_BASE}/listings/`, { headers: { "Authorization": `Bearer ${token}` } });
+    if (!resp.ok) throw new Error();
+    listings = await resp.json();
+  } catch {
+    content.innerHTML = `<p style="color:#dc2626;font-size:13px">Couldn't load your listings. Please try again.</p>`;
+    return;
+  }
+  updateSoldStat(listings);
+
+  const { price_notifications = [] } = await chrome.storage.local.get("price_notifications");
+  const toCheck = listings.filter(l => l.fb_posted && !l.is_sold && l.listing_url);
+  const n = toCheck.length;
+  const resultsHtml = buildResultsHtml(listings, price_notifications);
+
+  if (n === 0) {
+    const hasPosted = listings.some(l => l.fb_posted);
+    content.innerHTML = hasPosted
+      ? (resultsHtml || `<p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">All caught up — nothing to check.</p>`)
+      : `<p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">No Facebook listings yet.<br>Post a vehicle to Facebook first.</p>`;
+    return;
+  }
+
+  // Each run checks up to MAX_PER_RUN (least-recently-checked first) to keep the
+  // request burst small. Run again to work through the rest.
+  const MAX_PER_RUN = 10;
+  const runCount = Math.min(n, MAX_PER_RUN);
+  // ~9s per listing (navigate + Cloudflare wait + scrape + delay).
+  const estSecs = Math.max(5, Math.round(runCount * 9));
+  const estTxt = estSecs >= 120 ? `about ${Math.round(estSecs / 60)} minutes` : `about ${estSecs} seconds`;
+  const intro = n > MAX_PER_RUN
+    ? `DealersOrbit will check <b>${runCount}</b> of your <b>${n}</b> listings (the ones checked longest ago) for sold status and price changes. Run it again to check the rest.`
+    : `DealersOrbit will check your <b>${n}</b> listing${n > 1 ? "s" : ""} for sold status and price changes.`;
+
+  content.innerHTML = `
+    <div style="font-size:13px;color:#374151;line-height:1.5;margin-bottom:12px">
+      ${intro}<br>
+      This takes <b>${estTxt}</b>. A background tab will open in this window —
+      <b>please don't close it</b> until the check finishes.
+    </div>
+    <button id="startCheckBtn"
+      style="width:100%;background:#0d1f3c;color:#fff;border:none;border-radius:8px;
+             padding:10px;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:14px">
+      🔍 Check Listings
+    </button>
+    ${resultsHtml}
+  `;
+}
+
+// RUN screen: progress + Cancel. Kicks off the background run and shows results.
+async function runCheckFlow() {
+  const content = document.getElementById("soldModalContent");
+  content.innerHTML = `
+    <div style="text-align:center;padding:14px">
+      <div id="checkProgressText" style="font-size:14px;color:#374151;margin-bottom:6px">Starting…</div>
+      <div id="checkProgressSub" style="font-size:12px;color:#9ca3af;margin-bottom:14px;min-height:16px"></div>
+      <div style="font-size:11px;color:#9ca3af;margin-bottom:12px">A background tab is open — please don't close it.</div>
+      <button id="cancelCheckBtn"
+        style="background:#6b7280;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">
+        Cancel
+      </button>
+    </div>`;
+
+  let result;
+  try {
+    result = await new Promise(resolve => chrome.runtime.sendMessage({ type: "CHECK_LISTINGS_START" }, resolve));
+  } catch { result = { error: "exception" }; }
+
+  // Re-render results (fresh listings + notifications).
+  const { token } = await chrome.storage.local.get("token");
+  let listings = [];
+  try {
+    const r = await apiFetch(`${API_BASE}/listings/`, { headers: { "Authorization": `Bearer ${token}` } });
+    if (r.ok) listings = await r.json();
+  } catch {}
+  updateSoldStat(listings);
+  const { price_notifications = [] } = await chrome.storage.local.get("price_notifications");
+
+  let summary = "";
+  if (result?.error) {
+    summary = `<div style="color:#dc2626;font-size:12px;margin-bottom:10px">Check couldn't run (${result.error}).</div>`;
+  } else {
+    const parts = [];
+    if (result?.sold?.length) parts.push(`${result.sold.length} sold`);
+    if (result?.price_changes?.length) parts.push(`${result.price_changes.length} price change${result.price_changes.length > 1 ? "s" : ""}`);
+    if (result?.couldnt_check?.length) parts.push(`${result.couldnt_check.length} couldn't be checked`);
+    const headline = result?.cancelled ? "Check cancelled." : "Check complete.";
+    let tail = parts.length ? " " + parts.join(" · ") + "." : " No changes found.";
+    if (result?.remaining > 0) tail += ` ${result.remaining} more to check — run again.`;
+    summary = `<div style="font-size:12px;color:#374151;margin-bottom:10px">${headline}${tail}</div>`;
+  }
+
+  content.innerHTML = summary + buildResultsHtml(listings, price_notifications) + `
+    <button id="runAgainBtn"
+      style="width:100%;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:8px;
+             padding:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:10px">
+      Check again
+    </button>`;
+}
+
+// Parse a price string ("$30,995") to an int for up/down comparison.
+function _priceInt(p) {
+  const m = String(p || "").match(/[\d,]+/);
+  if (!m) return null;
+  const n = parseInt(m[0].replace(/,/g, ""), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Build the results body: Sold (Not sold / Done) + Price changes (Wrong price / Got it)
+// + a count of couldn't-check + an active summary.
+function buildResultsHtml(listings, priceNotifs) {
+  const sold   = listings.filter(l => l.is_sold);
+  const active = listings.filter(l => l.fb_posted && !l.is_sold);
+  const notChecked = active.filter(l => !l.last_checked_at).length;
   let html = "";
 
   if (sold.length > 0) {
-    html += `<div style="margin-bottom:16px">
-      <div style="font-size:12px;font-weight:700;color:#dc2626;
-                  text-transform:uppercase;margin-bottom:8px">
-        🚨 Sold — Remove from Facebook (${sold.length})
-      </div>`;
+    html += `<div style="margin-bottom:14px">
+      <div style="font-size:12px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Sold (${sold.length})</div>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:8px">These vehicles appear sold. Make sure they're removed from Facebook.</div>`;
     sold.forEach(l => {
-      const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ");
-      const detectedDate = l.sold_detected_at
-        ? new Date(l.sold_detected_at).toLocaleDateString()
-        : "Recently";
+      const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ") || `Listing ${l.id}`;
       html += `<div class="recent-ad-card" style="border-left:3px solid #dc2626">
         <div class="recent-ad-info">
           <div class="recent-ad-title">${title}</div>
-          <div class="recent-ad-meta">${l.price || ""} · Detected sold: ${detectedDate}</div>
+          <div class="recent-ad-meta">${l.price || ""}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
-          <span class="recent-ad-sold">Sold</span>
-          <button class="btn-small clear-sold-btn"
-                  data-listing-id="${l.id}"
-                  style="background:#6b7280;font-size:10px;padding:2px 6px"
-                  title="Dismiss — I've removed this from Facebook">✕</button>
+          <button class="btn-small not-sold-btn" data-listing-id="${l.id}"
+            style="background:#dc2626;color:#fff;font-size:11px;padding:4px 10px;font-weight:600;border:none;border-radius:6px;cursor:pointer" title="Not sold — resume checking it">Not sold</button>
+          <button class="btn-small clear-sold-btn" data-listing-id="${l.id}"
+            style="background:#16a34a;color:#fff;font-size:11px;padding:4px 10px;font-weight:600;border:none;border-radius:6px;cursor:pointer" title="I've removed it from Facebook">✓ Done</button>
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (priceNotifs.length > 0) {
+    html += `<div style="margin-bottom:14px">
+      <div style="font-size:12px;font-weight:700;color:#d97706;text-transform:uppercase;margin-bottom:6px">
+        Price changes (${priceNotifs.length}) · <span style="font-weight:600;text-transform:none">update your Facebook listing${priceNotifs.length > 1 ? "s" : ""}</span>
+      </div>`;
+    priceNotifs.forEach(p => {
+      const dir = (_priceInt(p.new) != null && _priceInt(p.old) != null)
+        ? (_priceInt(p.new) < _priceInt(p.old) ? "down" : "up") : null;
+      const arrowColor = dir === "down" ? "#16a34a" : "#dc2626"; // drop = green, increase = red
+      html += `<div class="recent-ad-card" style="border-left:3px solid #d97706">
+        <div class="recent-ad-info" style="flex:1;min-width:0">
+          <div class="recent-ad-title">${p.title || ("Listing " + p.id)}</div>
+          <div style="font-size:15px;font-weight:700;margin-top:3px;white-space:nowrap">
+            <span style="color:#9ca3af;text-decoration:line-through;font-weight:500">${p.old}</span>
+            <span style="color:${arrowColor};margin:0 4px">→</span>
+            <span style="color:${arrowColor}">${p.new}</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <button class="btn-small wrong-price-btn" data-listing-id="${p.id}"
+            style="background:#dc2626;color:#fff;font-size:11px;padding:4px 10px;font-weight:600;border:none;border-radius:6px;cursor:pointer" title="Fix an incorrect price">Wrong price</button>
+          <button class="btn-small dismiss-price-btn" data-listing-id="${p.id}"
+            style="background:#16a34a;color:#fff;font-size:11px;padding:4px 10px;font-weight:600;border:none;border-radius:6px;cursor:pointer">Got it</button>
         </div>
       </div>`;
     });
@@ -391,38 +559,14 @@ function renderSoldModalContent(listings) {
   }
 
   if (active.length > 0) {
-    html += `<div style="margin-bottom:16px">
-      <div style="font-size:12px;font-weight:700;color:#16a34a;
-                  text-transform:uppercase;margin-bottom:8px">
-        ✓ Still Active (${active.length})
-      </div>`;
-    active.forEach(l => {
-      const title = [l.year, l.make?.toUpperCase(), l.model].filter(Boolean).join(" ");
-      const checkedDate = l.last_checked_at
-        ? new Date(l.last_checked_at).toLocaleDateString()
-        : "Not yet checked";
-      html += `<div class="recent-ad-card" style="border-left:3px solid #16a34a">
-        <div class="recent-ad-info">
-          <div class="recent-ad-title">${title}</div>
-          <div class="recent-ad-meta">${l.price || ""} · Last checked: ${checkedDate}</div>
-        </div>
-        <span style="color:#16a34a;font-size:11px;font-weight:600">Active</span>
-      </div>`;
-    });
-    html += `</div>`;
+    html += `<div style="font-size:11px;color:#16a34a;margin-bottom:2px">✓ ${active.length} active listing${active.length > 1 ? "s" : ""}</div>`;
   }
-
-  if (unchecked.length > 0) {
-    html += `<div style="font-size:11px;color:#9ca3af;text-align:center;padding:8px">
-      ${unchecked.length} listing(s) not yet checked — check again in a few minutes
-    </div>`;
+  if (notChecked > 0) {
+    html += `<div style="font-size:11px;color:#9ca3af">${notChecked} not yet checked — run a check to update.</div>`;
   }
-
-  if (sold.length === 0 && active.length === 0) {
-    html = `<p style="font-size:13px;color:#6b7280;text-align:center;padding:16px">
-      No posted listings found. Post a vehicle to Facebook first.</p>`;
+  if (sold.length === 0 && priceNotifs.length === 0 && active.length === 0) {
+    html += `<p style="font-size:13px;color:#6b7280;text-align:center;padding:12px">No posted listings to check.</p>`;
   }
-
   return html;
 }
 
@@ -1867,6 +2011,114 @@ document.getElementById("saveTaglineBtn")?.addEventListener("click", async () =>
   }
 });
 
+// ── Video Style settings section ─────────────────────────────
+function loadVideoStyleSettings(user) {
+  const colorInput  = document.getElementById("videoBandColorInput");
+  const colorHex    = document.getElementById("videoBandColorHex");
+  const topMode     = document.getElementById("videoTopTextMode");
+  const topCustom   = document.getElementById("videoTopCustomText");
+  const ctaMode     = document.getElementById("videoCtaMode");
+  const ctaCustom   = document.getElementById("videoCtaCustomText");
+  const phoneNote   = document.getElementById("videoCtaPhoneNote");
+  if (!colorInput) return;
+
+  const color = user?.video_band_color || "#0d1f3c";
+  colorInput.value = color;
+  if (colorHex) colorHex.textContent = color;
+
+  if (topMode) topMode.value = user?.video_top_text_mode || "hook_then_vehicle";
+  if (topCustom) topCustom.value = user?.video_top_custom_text || "";
+  if (ctaMode) ctaMode.value = user?.video_cta_mode || "phone";
+  if (ctaCustom) ctaCustom.value = user?.video_cta_custom_text || "";
+
+  // Phone-aware note under the CTA selector
+  if (phoneNote) {
+    const hasPhone = !!(user?.phone_number && String(user.phone_number).trim());
+    phoneNote.textContent = hasPhone
+      ? `Your number (${user.phone_number}) will be shown.`
+      : "No phone number saved — \"Call or text\" falls back to \"DM me\". Add a phone number under Account.";
+  }
+
+  // Toggle custom text fields based on mode
+  const syncTopCustom = () => {
+    if (topCustom) topCustom.style.display = topMode?.value === "custom" ? "block" : "none";
+  };
+  const syncCtaCustom = () => {
+    if (ctaCustom) ctaCustom.style.display = ctaMode?.value === "custom" ? "block" : "none";
+  };
+  syncTopCustom();
+  syncCtaCustom();
+
+  // Bind once (dataset guard) — showSettingsScreen calls this on every open
+  if (!colorInput.dataset.vsBound) {
+    colorInput.dataset.vsBound = "1";
+    colorInput.addEventListener("input", () => {
+      if (colorHex) colorHex.textContent = colorInput.value;
+    });
+    document.getElementById("videoBandColorReset")?.addEventListener("click", () => {
+      colorInput.value = "#0d1f3c";
+      if (colorHex) colorHex.textContent = "#0d1f3c";
+    });
+    topMode?.addEventListener("change", syncTopCustom);
+    ctaMode?.addEventListener("change", syncCtaCustom);
+  }
+}
+
+document.getElementById("saveVideoStyleBtn")?.addEventListener("click", async () => {
+  const saveBtn  = document.getElementById("saveVideoStyleBtn");
+  const savedMsg = document.getElementById("videoStyleSaved");
+  const colorInput = document.getElementById("videoBandColorInput");
+  const topMode    = document.getElementById("videoTopTextMode");
+  const topCustom  = document.getElementById("videoTopCustomText");
+  const ctaMode    = document.getElementById("videoCtaMode");
+  const ctaCustom  = document.getElementById("videoCtaCustomText");
+
+  saveBtn.disabled    = true;
+  saveBtn.textContent = "Saving...";
+
+  try {
+    const { token } = await chrome.storage.local.get("token");
+    const body = {
+      video_band_color:      colorInput?.value || "#0d1f3c",
+      video_top_text_mode:   topMode?.value || "hook_then_vehicle",
+      video_top_custom_text: (topCustom?.value || "").trim(),
+      video_cta_mode:        ctaMode?.value || "phone",
+      video_cta_custom_text: (ctaCustom?.value || "").trim(),
+    };
+    const resp = await fetch(`${API_BASE}/auth/me`, {
+      method:  "PATCH",
+      headers: {
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error("Save failed");
+
+    // Keep the stored user in sync so a reopen reflects the saved values
+    const updated = await resp.json();
+    const { user } = await chrome.storage.local.get("user");
+    if (user) {
+      user.video_band_color      = updated.video_band_color;
+      user.video_top_text_mode   = updated.video_top_text_mode;
+      user.video_top_custom_text = updated.video_top_custom_text;
+      user.video_cta_mode        = updated.video_cta_mode;
+      user.video_cta_custom_text = updated.video_cta_custom_text;
+      await chrome.storage.local.set({ user });
+    }
+
+    if (savedMsg) {
+      savedMsg.style.display = "block";
+      setTimeout(() => savedMsg.style.display = "none", 2000);
+    }
+  } catch (err) {
+    alert("Failed to save video style. Please try again.");
+  } finally {
+    saveBtn.disabled    = false;
+    saveBtn.textContent = "Save Video Style";
+  }
+});
+
 // Settings screen populate
 // Human-readable plan label for the Settings subscription box.
 function planLabel(user) {
@@ -1913,6 +2165,7 @@ async function showSettingsScreen() {
   loadVoiceSettings();
   loadTaglineSettings();
   loadQuickLaunchSettings(user);
+  loadVideoStyleSettings(user);
 }
 
 settingsBtn?.addEventListener("click", showSettingsScreen);
@@ -4018,21 +4271,39 @@ async function renderQueue() {
     staleBanner.style.display = "none";
   }
 
-  // ── Sold banner ───────────────────────────────────────────
-  const { sold_notifications = [] } = await chrome.storage.local.get("sold_notifications");
+  // ── Sold / price-change banner ─────────────────────────────
+  const { sold_notifications = [], price_notifications = [], last_listings_check } =
+    await chrome.storage.local.get(["sold_notifications", "price_notifications", "last_listings_check"]);
   const soldBanner = document.getElementById("soldBanner");
-  if (sold_notifications.length > 0 && soldBanner) {
+  if ((sold_notifications.length > 0 || price_notifications.length > 0) && soldBanner) {
+    const parts = [];
+    if (sold_notifications.length) parts.push(`🚨 ${sold_notifications.length} may be sold`);
+    if (price_notifications.length) parts.push(`💲 ${price_notifications.length} price change${price_notifications.length > 1 ? 's' : ''}`);
     soldBanner.style.display = "flex";
     soldBanner.innerHTML = `
-      <span>🚨 ${sold_notifications.length} vehicle${sold_notifications.length > 1 ? 's' : ''} may be sold</span>
-      <button class="btn-small" id="dismissSoldBtn">Dismiss</button>`;
-    document.getElementById("dismissSoldBtn")?.addEventListener("click", async () => {
-      await chrome.storage.local.remove("sold_notifications");
-      chrome.action.setBadgeText({ text: "" });
-      soldBanner.style.display = "none";
-    });
+      <span>${parts.join(" · ")}</span>
+      <button class="btn-small" id="viewChecksBtn">View</button>`;
+    document.getElementById("viewChecksBtn")?.addEventListener("click", () => openCheckListingsModal());
   } else if (soldBanner) {
     soldBanner.style.display = "none";
+  }
+
+  // ── 3-day "haven't checked" reminder ───────────────────────
+  const checkReminderBanner = document.getElementById("checkReminderBanner");
+  if (checkReminderBanner) {
+    const THREE_DAYS = 3 * 24 * 60 * 60 * 1000;
+    const stale = !last_listings_check || (Date.now() - last_listings_check > THREE_DAYS);
+    // Only nudge if the user actually has posted listings to check (FB-posted stat).
+    const postedCount = parseInt(document.getElementById("statFbPosted")?.textContent || "0", 10) || 0;
+    if (stale && postedCount > 0) {
+      checkReminderBanner.style.display = "flex";
+      checkReminderBanner.innerHTML = `
+        <span>🔍 Haven't checked your listings in a while — run a quick check for sold & price changes.</span>
+        <button class="btn-small" id="reminderCheckBtn">Check now</button>`;
+      document.getElementById("reminderCheckBtn")?.addEventListener("click", () => openCheckListingsModal());
+    } else {
+      checkReminderBanner.style.display = "none";
+    }
   }
 
   // ── Build unified card list ───────────────────────────────

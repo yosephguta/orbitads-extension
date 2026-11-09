@@ -550,6 +550,222 @@ function scrapeWithConfig(card, config) {
   };
 }
 
+// ── Dealership inventory page-sync button ──────────────────────
+// A dealership-plan member can push EVERY card on a config-driven inventory page
+// into their dealership inventory with one click. Reuses the exact per-card
+// extraction the import buttons use (scrapeWithConfig) — no new selectors — plus
+// a robust VIN read (the backend-adapted vin extractor is text-type, which
+// scrapeWithConfig's attribute read misses). Backend is the authoritative gate.
+
+let _pageSyncEligible = null; // null = not yet checked; cached per page load
+
+async function pageSyncEligible() {
+  if (_pageSyncEligible !== null) return _pageSyncEligible;
+  try {
+    const { user } = await chrome.storage.local.get('user');
+    // Effective plan comes from /auth/me (dealership members read 'dealership').
+    if (!user || user.purchased_plan !== 'dealership') { _pageSyncEligible = false; return false; }
+    const host = window.location.hostname.replace(/^www\./, '').toLowerCase();
+    const allowed = Array.isArray(user.allowed_config_domains) ? user.allowed_config_domains : [];
+    _pageSyncEligible = allowed.some(d => {
+      const b = String(d || '').replace(/^www\./, '').toLowerCase();
+      return b && (host === b || host.endsWith('.' + b));
+    });
+  } catch (_) {
+    _pageSyncEligible = false;
+  }
+  return _pageSyncEligible;
+}
+
+function pageSyncLabel(n) {
+  return `➕ Add this page to Dealership inventory (${n} car${n === 1 ? '' : 's'})`;
+}
+
+// Read a 17-char VIN from a card. scrapeWithConfig reads vin via getAttr, which
+// returns null for text-type vin selectors (the backend-adapted config), so pull
+// the VIN directly: configured selector (attr then text) → card data-vin → full
+// card text. Uses the config's OWN vin selector, not a new one.
+function extractCardVin(card, config) {
+  const ext = config?.inventory_page?.extractors?.vin;
+  if (ext?.selector) {
+    const el = card.querySelector(ext.selector);
+    if (el) {
+      if (ext.attribute) {
+        const a = (el.getAttribute(ext.attribute) || '').toUpperCase();
+        const m = a.match(VIN_REGEX);
+        if (m) return m[1];
+      }
+      const t = (el.innerText || el.textContent || '').toUpperCase();
+      const m = t.match(VIN_REGEX);
+      if (m) return m[1];
+    }
+  }
+  const dv = (card.getAttribute('data-vin') || '').toUpperCase();
+  const m2 = dv.match(VIN_REGEX);
+  if (m2) return m2[1];
+  const m3 = (card.innerText || '').toUpperCase().match(VIN_REGEX);
+  if (m3) return m3[1];
+  return null;
+}
+
+function pageConditionFromUrl() {
+  const path = window.location.pathname.toLowerCase();
+  if (path.includes('/new-inventory') || path.includes('/new/')) return 'new';
+  if (path.includes('/used-inventory') || path.includes('/used/') ||
+      path.includes('/pre-owned') || path.includes('/certified')) return 'used';
+  return null;
+}
+
+// Only real vehicle cards — those with a VDP link. The card selector also matches
+// non-vehicle widgets (e.g. dealer.com map/location tiles with no href), which we
+// must not count or sync.
+function getRealCards(config) {
+  const sel = config.inventory_page.card_selector;
+  const linkSel = config?.inventory_page?.extractors?.link?.selector || 'a[href]';
+  return Array.from(document.querySelectorAll(sel)).filter(card => {
+    const a = card.querySelector(linkSel) || card.querySelector('a[href]');
+    const href = a?.getAttribute('href') || a?.getAttribute('data-href') || '';
+    return href && href !== '#' && !href.toLowerCase().startsWith('javascript');
+  });
+}
+
+// Many dealer platforms (dealer.com) lazy-load the VIN/description into each card
+// only when it scrolls into view. Bring every real card into view to trigger that,
+// then wait until the VINs populate (or we plateau / time out). Restores scroll.
+async function loadLazyCardVins(config, realCards, timeoutMs = 12000) {
+  const prevScroll = window.scrollY;
+  for (const c of realCards) {
+    try { c.scrollIntoView({ block: 'center' }); } catch (_) {}
+    await sleep(70);
+  }
+  const start = Date.now();
+  let lastCount = -1, stable = 0;
+  while (Date.now() - start < timeoutMs) {
+    const withVin = realCards.filter(c => extractCardVin(c, config)).length;
+    if (withVin >= realCards.length) break;              // all loaded
+    if (withVin === lastCount) { if (++stable >= 3) break; }  // plateaued — stop waiting
+    else { stable = 0; lastCount = withVin; }
+    await sleep(400);
+  }
+  try { window.scrollTo(0, prevScroll); } catch (_) {}
+}
+
+function gatherPageVehicles(config) {
+  const cards = getRealCards(config);
+  const condition = pageConditionFromUrl();
+  return cards.map(card => {
+    const v = scrapeWithConfig(card, config);
+    const rawVin = v.vin ? String(v.vin).toUpperCase() : '';
+    const vin = VIN_REGEX.test(rawVin) ? (rawVin.match(VIN_REGEX)[1]) : extractCardVin(card, config);
+    const listing_url = (v.listing_url && v.listing_url.startsWith('http') &&
+      v.listing_url !== window.location.origin && v.listing_url !== window.location.href)
+      ? v.listing_url : null;
+    return {
+      vin: vin || null,
+      year: v.year || null,
+      make: v.make || null,
+      model: v.model || null,
+      trim: v.trim || null,
+      price: v.price || null,
+      mileage: v.mileage || null,
+      exterior_color: null,
+      interior_color: null,
+      listing_url,
+      photo_urls: Array.isArray(v.photos) ? v.photos : [],
+      condition,
+    };
+  });
+}
+
+async function injectPageSyncButton(config) {
+  try {
+    const sel = config.inventory_page.card_selector;
+    const count = getRealCards(config).length;
+
+    const existing = document.querySelector('.dealersorbit-page-sync-btn');
+    if (existing) {
+      // Keep the count fresh while idle (observer fires as cards stream in).
+      // CRITICAL: only write when the count actually changed — an unconditional
+      // textContent write every observer tick re-triggers the observer, causing an
+      // infinite mutation loop that freezes the page.
+      if (existing.dataset.state === 'idle' && existing.dataset.count !== String(count)) {
+        existing.dataset.count = String(count);
+        existing.textContent = pageSyncLabel(count);
+      }
+      return;
+    }
+    if (count === 0) return;
+    if (!(await pageSyncEligible())) return;
+    // Re-check after the await — another observer tick may have created it.
+    if (document.querySelector('.dealersorbit-page-sync-btn')) return;
+
+    const bar = document.createElement('div');
+    bar.className = 'dealersorbit-page-sync-bar';
+    const btn = document.createElement('button');
+    btn.className = 'dealersorbit-page-sync-btn';
+    btn.dataset.state = 'idle';
+    btn.dataset.count = String(count);
+    btn.textContent = pageSyncLabel(count);
+    btn.title = 'Sync every vehicle on this page to your dealership inventory';
+    btn.addEventListener('click', () => handlePageSyncClick(btn, config));
+    bar.appendChild(btn);
+
+    const first = document.querySelector(sel);
+    const anchor = first?.parentElement || first;
+    if (anchor) anchor.insertAdjacentElement('beforebegin', bar);
+  } catch (e) {
+    console.log('DealersOrbit: page-sync button inject skipped:', e);
+  }
+}
+
+async function handlePageSyncClick(btn, config) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.dataset.state = 'busy';
+  btn.style.background = '#6b7280';
+
+  const finish = (text, color) => {
+    btn.textContent = text;
+    btn.style.background = color || '';
+    btn.dataset.state = 'done';
+    btn.disabled = false;
+  };
+
+  try {
+    // Dealer.com (and others) lazy-load VINs — scroll every card into view first.
+    const realCards = getRealCards(config);
+    const n = realCards.length;
+    btn.textContent = `Loading ${n} car${n === 1 ? '' : 's'}…`;
+    await loadLazyCardVins(config, realCards);
+
+    const vehicles = gatherPageVehicles(config);
+    btn.textContent = `Syncing ${vehicles.length} car${vehicles.length === 1 ? '' : 's'}…`;
+
+    const resp = await chrome.runtime.sendMessage({
+      type: 'SYNC_INVENTORY_PAGE',
+      source_page_url: window.location.href,
+      vehicles,
+    });
+    if (resp?.success && resp.result) {
+      const r = resp.result;
+      const created = r.created || 0;
+      const updated = r.updated || 0;
+      const skipped = Array.isArray(r.skipped) ? r.skipped.length : (r.skipped || 0);
+      finish(`✓ ${created + updated} added (${created} new, ${updated} updated, ${skipped} skipped)`, '#16a34a');
+    } else if (resp?.status === 403) {
+      finish('Dealership plan required', '#f59e0b');
+    } else if (resp?.status === 404 || resp?.network) {
+      finish("Inventory sync isn't available yet", '#f59e0b');
+    } else {
+      finish("Couldn't sync this page", '#dc2626');
+    }
+  } catch (err) {
+    // sendMessage can reject if the SW is gone / context invalidated — never throw.
+    console.error('DealersOrbit: page sync failed:', err);
+    finish("Inventory sync isn't available yet", '#f59e0b');
+  }
+}
+
 function injectConfigDrivenButtons(cards, config) {
   cards.forEach(card => {
     if (card.querySelector(`.${BUTTON_CLASS}`)) return;
@@ -2759,8 +2975,10 @@ async function init() {
     const sel = cfg.inventory_page.card_selector;
     const existing = Array.from(document.querySelectorAll(sel));
     if (existing.length > 0) injectConfigDrivenButtons(existing, cfg);
+    injectPageSyncButton(cfg);  // one page-level "Add this page to inventory" button
     const observer = new MutationObserver(() => {
       injectConfigDrivenButtons(Array.from(document.querySelectorAll(sel)), cfg);
+      injectPageSyncButton(cfg);
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }

@@ -330,6 +330,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Dealership inventory sync — the content-script "Add this page to inventory"
+  // button sends every card on a config-driven inventory page here. We forward it
+  // to the backend (authoritative gate: require_dealership_member + domain check).
+  // Never throws — the content script shows the status inline. No queue entry, no
+  // classification, no trial counter, no VDP tabs.
+  if (message.type === "SYNC_INVENTORY_PAGE") {
+    (async () => {
+      try {
+        const resp = await apiFetch('/dealership/inventory/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_page_url: message.source_page_url,
+            vehicles: message.vehicles || [],
+          }),
+        });
+        if (resp.status === 403) { sendResponse({ success: false, status: 403 }); return; }
+        if (resp.status === 404) { sendResponse({ success: false, status: 404 }); return; }
+        if (!resp.ok) { sendResponse({ success: false, status: resp.status }); return; }
+        const data = await resp.json();
+        sendResponse({ success: true, result: data });
+      } catch (e) {
+        // Network failure / older prod backend without the endpoint.
+        console.error('DealersOrbit: inventory sync failed:', e);
+        sendResponse({ success: false, network: true });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === "GET_CONFIG") {
     (async () => {
       const domain = message.domain;

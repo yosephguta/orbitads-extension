@@ -360,6 +360,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Dealership tab — capture a car's detail-page (VDP) specs. The popup sends the
+  // row's listing_url; we open it in an inactive background tab, read the DDC.WS.state
+  // JSON (full highlights/packages) + the dl.dl-horizontal spec table, close the tab,
+  // and hand the parsed specs back so the popup can PUT them to /specs. Never throws —
+  // on any failure the popup falls back to "basic" highlights. (bug #1: one listener.)
+  if (message.type === "CAPTURE_VDP_SPECS") {
+    (async () => {
+      const result = await captureVdpSpecs(message.listing_url);
+      sendResponse(result);
+    })();
+    return true;
+  }
+
   if (message.type === "GET_CONFIG") {
     (async () => {
       const domain = message.domain;
@@ -2215,6 +2228,151 @@ function waitForTabLoad(tabId) {
       resolve();
     }, 15000);
   });
+}
+
+// ── Dealership tab: VDP spec capture ──────────────────────────────────────────
+// Open the car's detail page in an inactive background tab, read its specs, close
+// the tab. Returns { success, specs, source_page_url } or { success:false, reason }.
+// Bounded by a 20s overall timeout; the tab is always removed in finally. Never
+// throws (the caller falls back to "basic" highlights on failure).
+async function captureVdpSpecs(listingUrl) {
+  try { new URL(listingUrl); } catch { return { success: false, reason: "bad_url" }; }
+
+  let tab = null;
+  const run = (async () => {
+    try {
+      tab = await chrome.tabs.create({ url: listingUrl, active: false });
+      const tabId = tab?.id;
+      if (!tabId) return { success: false, reason: "tab_failed" };
+      await waitForTabLoad(tabId);
+      await sleep(2500);  // let DDC render + inline DDC.WS.state scripts land
+      const res = (await chrome.scripting.executeScript({
+        target: { tabId }, func: extractVdpSpecs,
+      }))?.[0]?.result;
+      if (!res) return { success: false, reason: "no_result" };
+      const finalUrl = (await chrome.tabs.get(tabId))?.url || listingUrl;
+      return { success: true, specs: res, source_page_url: finalUrl };
+    } catch (e) {
+      console.warn("DealersOrbit: VDP spec capture failed:", e);
+      return { success: false, reason: "exception" };
+    }
+  })();
+
+  const timeout = new Promise((r) => setTimeout(() => r({ success: false, reason: "timeout" }), 20000));
+  try {
+    return await Promise.race([run, timeout]);
+  } finally {
+    if (tab?.id) { try { await chrome.tabs.remove(tab.id); } catch (_) {} }
+  }
+}
+
+// Injected into the VDP tab (isolated world). Reads the untruncated highlights &
+// packages from the inline DDC.WS.state JSON, the spec table from the DOM, and the
+// window-sticker / Carfax links. Self-contained (serialized by executeScript).
+// Method per reports/2026-11-12-step2-s1-diagnosis.md §2.
+function extractVdpSpecs() {
+  const CAP = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim().slice(0, 200);
+
+  // Return the balanced { … } object string starting at s[start] ('{'),
+  // ignoring braces inside string literals.
+  function balancedSlice(s, start) {
+    let depth = 0, inStr = false, q = "", esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === q) inStr = false;
+      } else if (c === '"' || c === "'") { inStr = true; q = c; }
+      else if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) return s.slice(start, i + 1); }
+    }
+    return null;
+  }
+
+  // Find a `DDC.WS.state['<widgetKey>'][...] = { … "<requiredKey>" … }` assignment
+  // and JSON.parse it. Skips the `= … || {}` self-init assignments (no requiredKey).
+  function grabStateObject(allText, widgetKey, requiredKey) {
+    let idx = 0;
+    while (true) {
+      const at = allText.indexOf(widgetKey, idx);
+      if (at === -1) return null;
+      idx = at + widgetKey.length;
+      const eq = allText.indexOf("=", at);
+      if (eq === -1) return null;
+      const brace = allText.indexOf("{", eq);
+      if (brace === -1) continue;
+      const obj = balancedSlice(allText, brace);
+      if (obj && obj.indexOf('"' + requiredKey + '"') !== -1) {
+        try { return JSON.parse(obj); } catch (e) { /* keep searching */ }
+      }
+    }
+  }
+
+  const scriptText = Array.from(document.querySelectorAll("script"))
+    .map((s) => s.textContent || "").join("\n");
+
+  // ── Highlights (ws-hl-features → features: [[id, name], …]) ──
+  let highlights = [];
+  try {
+    const st = grabStateObject(scriptText, "ws-hl-features", "features");
+    if (st && Array.isArray(st.features)) {
+      highlights = st.features
+        .map((f) => (Array.isArray(f) ? f[1] : (f && f.name)))
+        .filter(Boolean).map(CAP);
+    }
+  } catch (e) {}
+  if (!highlights.length) {
+    // Fallback to the truncated DOM list.
+    highlights = Array.from(document.querySelectorAll('[data-widget-name="ws-hl-features"] li'))
+      .map((li) => CAP(li.textContent)).filter(Boolean);
+  }
+  // de-dupe, cap at 60 (backend limit)
+  highlights = Array.from(new Set(highlights)).slice(0, 60);
+
+  // ── Packages (ws-packages-options → packages: [{name, subitems:[{name}]}]) ──
+  let packages = [];
+  try {
+    const st = grabStateObject(scriptText, "ws-packages-options", "packages");
+    if (st && Array.isArray(st.packages)) {
+      packages = st.packages.map((p) => ({
+        name: CAP(p && p.name),
+        items: Array.isArray(p && p.subitems)
+          ? p.subitems.map((si) => CAP(si && si.name)).filter(Boolean).slice(0, 60)
+          : [],
+      })).filter((p) => p.name).slice(0, 30);
+    }
+  } catch (e) {}
+
+  // ── Spec table (dl.dl-horizontal dt/dd, dedup by key, first value wins) ──
+  const spec_table = {};
+  Array.from(document.querySelectorAll("dl.dl-horizontal")).forEach((dl) => {
+    const kids = Array.from(dl.children);
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i].tagName !== "DT") continue;
+      const dd = kids[i + 1];
+      if (!dd || dd.tagName !== "DD") continue;
+      const key = CAP(kids[i].textContent).replace(/:$/, "").trim();
+      let val = CAP(dd.textContent).replace(/\s*Details\s*$/i, "").trim();
+      if (key && val && !(key in spec_table)) spec_table[key] = val;
+    }
+  });
+  // cap at 100 rows (backend limit)
+  const specKeys = Object.keys(spec_table).slice(0, 100);
+  const capped_specs = {};
+  specKeys.forEach((k) => { capped_specs[k] = spec_table[k]; });
+
+  // ── Window sticker (veh_res_v1 windowStickerUrl, only a real URL) ──
+  let window_sticker_url = null;
+  const wsm = scriptText.match(/"windowStickerUrl"\s*:\s*"(https?:[^"]+)"/);
+  if (wsm) window_sticker_url = wsm[1];
+
+  // ── Carfax link ──
+  let carfax_url = null;
+  const cf = document.querySelector('a[href*="carfax.com"]');
+  if (cf && cf.href) carfax_url = cf.href;
+
+  return { spec_table: capped_specs, highlights, packages, window_sticker_url, carfax_url };
 }
 
 // Registers a vehicle's listing for sold-checking (sets fb_posted). This is the

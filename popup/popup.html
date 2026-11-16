@@ -28,6 +28,13 @@
     </div>
   </header>
 
+  <!-- ── Main tab bar (Listings & Videos | Dealership) ─────── -->
+  <!-- Shown only on the dashboard + dealership screens (toggled in showScreen). -->
+  <nav class="main-tabs" id="mainTabs" style="display:none">
+    <button class="main-tab selected" id="tabListings" data-tab="dashboard">Listings &amp; Videos</button>
+    <button class="main-tab" id="tabDealership" data-tab="dealership">Dealership</button>
+  </nav>
+
   <!-- ── Login screen ─────────────────────────────────────── -->
   <div class="screen" id="loginScreen">
     <div class="login-logo">
@@ -426,6 +433,29 @@
 
       <div style="font-size:11px;color:#9ca3af">
         All ad scripts, descriptions, and voiceovers will be generated in the selected language.
+      </div>
+    </div>
+
+    <!-- Dealership tab settings (highlights language) — dealership-plan users only -->
+    <div class="settings-section" id="dlrSettingsSection" style="display:none">
+      <div class="settings-section-title">Dealership</div>
+      <label style="font-size:12px;color:#374151;font-weight:600;display:block;margin-bottom:6px">
+        Talking-point language
+      </label>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button class="hl-lang-btn selected" data-hllang="en" id="hlLangEnBtn"
+                style="flex:1;padding:10px;border-radius:8px;border:2px solid #1a56db;
+                       background:#eff6ff;color:#1a56db;font-weight:700;cursor:pointer">
+          🇺🇸 English
+        </button>
+        <button class="hl-lang-btn" data-hllang="es" id="hlLangEsBtn"
+                style="flex:1;padding:10px;border-radius:8px;border:2px solid #e5e7eb;
+                       background:white;color:#374151;font-weight:700;cursor:pointer">
+          🇪🇸 Español
+        </button>
+      </div>
+      <div style="font-size:11px;color:#9ca3af">
+        Language used for the AI talking points on each car in the Dealership tab.
       </div>
     </div>
 
@@ -1206,6 +1236,44 @@
     @keyframes spin360 { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
   </style>
 
+  <!-- ── Dealership tab screen ────────────────────────────── -->
+  <div class="screen" id="dealershipScreen" style="display:none">
+
+    <!-- Locked state (non-Dealership-plan users) -->
+    <div id="dlrLocked" class="dlr-locked" style="display:none">
+      <div class="dlr-locked-icon">🔒</div>
+      <div class="dlr-locked-title">Dealership plan feature</div>
+      <div class="dlr-locked-text">
+        Ask your dealership manager about the DealersOrbit Dealership plan to unlock
+        desk lookup, talking points, and alternatives for your whole inventory.
+      </div>
+      <a class="dlr-learn-more" id="dlrLearnMore"
+         href="https://dealersorbit.com/#pricing" target="_blank">Learn more →</a>
+    </div>
+
+    <!-- Unlocked content -->
+    <div id="dlrMain" style="display:none">
+
+      <!-- Search view -->
+      <div id="dlrSearchView">
+        <div class="dlr-search-wrap">
+          <input type="text" id="dlrSearch" class="dlr-search"
+                 placeholder="Search inventory — stock #, VIN, year/make/model…"
+                 autocomplete="off">
+        </div>
+        <div id="dlrResults" class="dlr-results"></div>
+      </div>
+
+      <!-- Car detail view -->
+      <div id="dlrDetailView" style="display:none">
+        <button class="btn-back" id="dlrBackToSearch">← Back to inventory</button>
+        <div id="dlrDetail" class="dlr-detail"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="dealership.js"></script>
   <script src="popup.js"></script>
 </body>
 

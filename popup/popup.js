@@ -25,6 +25,8 @@ const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 // ── Elements ──────────────────────────────────────────────────
 const dashboardScreen = document.getElementById("dashboardScreen");
 const reviewQueueContainer = document.getElementById("reviewQueueCards") || document.createElement("div"); const settingsScreen = document.getElementById("settingsScreen");
+const dealershipScreen = document.getElementById("dealershipScreen");
+const mainTabs = document.getElementById("mainTabs");
 const settingsBackBtn = document.getElementById("settingsBackBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const helpBtn = document.getElementById("helpBtn");
@@ -804,7 +806,7 @@ document.getElementById("jobList")?.addEventListener("click", async (e) => {
   }
 });
 
-settingsBackBtn?.addEventListener("click", () => showScreen(dashboardScreen));
+settingsBackBtn?.addEventListener("click", () => { dlrGoHome(); });
 document.getElementById("tutorialBtn")?.addEventListener("click", () => {
   chrome.tabs.create({ url: "https://dealersorbit.com/tutorial" });
 });
@@ -812,7 +814,7 @@ helpBtn?.addEventListener("click", () => {
   showScreen(helpScreen);
 });
 document.getElementById("helpBackBtn")?.addEventListener("click", () => {
-  showScreen(dashboardScreen);
+  dlrGoHome();
 });
 
 document.getElementById("supportForm")?.addEventListener("submit", async (e) => {
@@ -886,7 +888,7 @@ signOutBtn?.addEventListener("click", async () => {
     'onboarding_card_selector', 'onboarding_detail_url',
     'onboarding_prices', 'onboarding_waiting_detail',
     'current_generating_vin', 'userLanguage', 'dealersorbit_migrated',
-    'has_imported_vehicle',
+    'has_imported_vehicle', 'last_main_tab', 'dealership_tab_seen',
   ]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
@@ -2166,6 +2168,7 @@ async function showSettingsScreen() {
   loadTaglineSettings();
   loadQuickLaunchSettings(user);
   loadVideoStyleSettings(user);
+  try { await dlrRefreshSettingsSection(); } catch (e) { console.warn("DealersOrbit: dlrRefreshSettingsSection failed:", e); }
 }
 
 settingsBtn?.addEventListener("click", showSettingsScreen);
@@ -2327,8 +2330,10 @@ document.getElementById("saveSettingsBtn")?.addEventListener("click", async () =
   });
 
   if (resp.ok) {
-    const updated = await resp.json();
-    await chrome.storage.local.set({ user: updated });
+    // Merge only what changed — PATCH /auth/me returns the raw row (no effective-plan
+    // overlay), so storing it wholesale would blank an inheriting rep's plan.
+    const { user: cur } = await chrome.storage.local.get("user");
+    await chrome.storage.local.set({ user: { ...(cur || {}), phone_number: phone || null } });
     document.getElementById("settingsSaved").style.display = "block";
     setTimeout(() => {
       document.getElementById("settingsSaved").style.display = "none";
@@ -2364,8 +2369,11 @@ document.getElementById("saveVoiceBtn")?.addEventListener("click", async () => {
 
     if (!resp.ok) throw new Error("Save failed");
 
-    const updated = await resp.json();
-    await chrome.storage.local.set({ user: updated });
+    // Merge only the changed voice field — PATCH /auth/me returns the raw row (no
+    // effective-plan overlay), so storing it wholesale would blank an inheriting
+    // rep's plan (locks the Dealership tab / mis-gates outro) until the next open.
+    const { user: cur } = await chrome.storage.local.get("user");
+    await chrome.storage.local.set({ user: { ...(cur || {}), [voiceField]: voiceIdToSave } });
 
     // Persist custom voice ID locally (English only)
     if (userLanguage !== 'es' && !PRELOADED_VOICES.find(v => v.id === voiceIdToSave)) {
@@ -3402,6 +3410,9 @@ function showConfigReadyBanner(domain) {
 }
 
 async function init() {
+  // Wire up the Dealership tab (tab bar, search, settings) once.
+  try { dlrSetup(); } catch (e) { console.warn("DealersOrbit: dlrSetup failed:", e); }
+
   // ── Language toggle ──────────────────────────────────────────
   function updateLangBtnUI(lang) {
     document.querySelectorAll('.lang-btn').forEach(b => {
@@ -3429,8 +3440,12 @@ async function init() {
       });
 
       if (patchResp.ok) {
-        const updated = await patchResp.json();
-        await chrome.storage.local.set({ user: updated });
+        // PATCH /auth/me returns the RAW row (own purchased_plan/status), not the
+        // effective overlay GET /auth/me returns — storing it wholesale would blank
+        // an inheriting rep's effective plan (locks the Dealership tab, mis-gates the
+        // outro feature) until the next popup open. Merge only the field we changed.
+        const { user: cur } = await chrome.storage.local.get('user');
+        await chrome.storage.local.set({ user: { ...(cur || {}), preferred_language: lang } });
       } else {
         alert('Failed to save language preference. Please try again.');
       }
@@ -3680,7 +3695,10 @@ async function init() {
     attachQuickLaunchHandlers();
     await checkShowWelcome(freshUser);
 
-    renderQueue();
+    // Await renderQueue before switching tabs, so a slow in-flight render can't
+    // call showScreen(dashboardScreen) and flip us back off the dealership tab.
+    await renderQueue();
+    try { await dlrApplyInitialTab(freshUser); } catch (e) { console.warn("DealersOrbit: dlrApplyInitialTab failed:", e); }
     await restartPollingIfNeeded();
     await restartClassifyingIfNeeded();
     if (queueInterval) clearInterval(queueInterval);
@@ -3834,9 +3852,16 @@ function showFbListingScreen(listing, vehicle) {
 const helpScreen = document.getElementById("helpScreen");
 
 function showScreen(screen) {
-  [loginScreen, dashboardScreen, reviewScreen, fbListingScreen, settingsScreen, helpScreen]
+  [loginScreen, dashboardScreen, dealershipScreen, reviewScreen, fbListingScreen, settingsScreen, helpScreen]
     .forEach(s => { if (s) s.style.display = "none"; });
   if (screen) screen.style.display = "block";
+  // The main tab bar belongs to the two main tabs only (dashboard + dealership).
+  if (mainTabs) {
+    const onMain = (screen === dashboardScreen || screen === dealershipScreen);
+    mainTabs.style.display = onMain ? "flex" : "none";
+    document.getElementById("tabListings")?.classList.toggle("selected", screen === dashboardScreen);
+    document.getElementById("tabDealership")?.classList.toggle("selected", screen === dealershipScreen);
+  }
 }
 function showLoggedIn(user) {
   userInfo.style.display = "flex";
@@ -3905,6 +3930,7 @@ loginBtn.addEventListener("click", async () => {
         'sold_notifications', 'last_sold_check', 'notified_config_platform_id',
         'dealer_configured', 'config_status', 'subscription_cache',
         'current_generating_vin', 'userLanguage',
+        'last_main_tab', 'dealership_tab_seen',
         archiveKey, // clear any archive saved for this new user
       ]);
     } else {
@@ -3928,6 +3954,7 @@ loginBtn.addEventListener("click", async () => {
     // any background-written session_expired flag from triggering a spurious
     // handleSessionExpired() call (belt-and-suspenders fix for bug #1).
     await renderQueue();
+    try { await dlrApplyInitialTab(user); } catch (e) { console.warn("DealersOrbit: dlrApplyInitialTab failed:", e); }
     if (queueInterval) clearInterval(queueInterval);
     queueInterval = setInterval(renderQueue, 2000);
     await checkShowWelcome(user);
@@ -3971,7 +3998,7 @@ logoutBtn.addEventListener("click", async () => {
     'onboarding_card_selector', 'onboarding_detail_url',
     'onboarding_prices', 'onboarding_waiting_detail',
     'current_generating_vin', 'userLanguage', 'dealersorbit_migrated',
-    'has_imported_vehicle',
+    'has_imported_vehicle', 'last_main_tab', 'dealership_tab_seen',
   ]);
   userInfo.style.display = "none";
   showScreen(loginScreen);
@@ -4220,6 +4247,7 @@ async function renderQueue() {
   if (fbListingScreen?.style.display !== "none") return;
   if (settingsScreen?.style.display !== "none") return;
   if (helpScreen?.style.display !== "none") return;
+  if (dealershipScreen?.style.display !== "none") return;
   if (generateModal?.style.display !== "none") return;
 
   // Block dashboard if subscription is expired

@@ -2917,6 +2917,7 @@ async function resumePolling(job, queue) {
 
         if (pollData.status === 'completed') {
           job.result_url = pollData.final_video_url;
+          job.video_orientation = pollData.video_orientation || 'vertical';
           job.status     = 'completed';
           job.progress   = 100;
           job.label      = 'Complete!';
@@ -3059,6 +3060,7 @@ async function realProcessing(job, queue) {
 
     if (pollData.status === "completed") {
       job.result_url = pollData.final_video_url;
+      job.video_orientation = pollData.video_orientation || "vertical";
       job.status = "completed";
       job.progress = 100;
       job.label = "Complete!";

@@ -2015,6 +2015,7 @@ document.getElementById("saveTaglineBtn")?.addEventListener("click", async () =>
 
 // ── Video Style settings section ─────────────────────────────
 function loadVideoStyleSettings(user) {
+  const orientation = document.getElementById("videoOrientation");
   const colorInput  = document.getElementById("videoBandColorInput");
   const colorHex    = document.getElementById("videoBandColorHex");
   const topMode     = document.getElementById("videoTopTextMode");
@@ -2023,6 +2024,8 @@ function loadVideoStyleSettings(user) {
   const ctaCustom   = document.getElementById("videoCtaCustomText");
   const phoneNote   = document.getElementById("videoCtaPhoneNote");
   if (!colorInput) return;
+
+  if (orientation) orientation.value = user?.video_orientation || "vertical";
 
   const color = user?.video_band_color || "#0d1f3c";
   colorInput.value = color;
@@ -2069,6 +2072,7 @@ function loadVideoStyleSettings(user) {
 document.getElementById("saveVideoStyleBtn")?.addEventListener("click", async () => {
   const saveBtn  = document.getElementById("saveVideoStyleBtn");
   const savedMsg = document.getElementById("videoStyleSaved");
+  const orientation = document.getElementById("videoOrientation");
   const colorInput = document.getElementById("videoBandColorInput");
   const topMode    = document.getElementById("videoTopTextMode");
   const topCustom  = document.getElementById("videoTopCustomText");
@@ -2081,6 +2085,7 @@ document.getElementById("saveVideoStyleBtn")?.addEventListener("click", async ()
   try {
     const { token } = await chrome.storage.local.get("token");
     const body = {
+      video_orientation:     orientation?.value || "vertical",
       video_band_color:      colorInput?.value || "#0d1f3c",
       video_top_text_mode:   topMode?.value || "hook_then_vehicle",
       video_top_custom_text: (topCustom?.value || "").trim(),
@@ -2101,6 +2106,7 @@ document.getElementById("saveVideoStyleBtn")?.addEventListener("click", async ()
     const updated = await resp.json();
     const { user } = await chrome.storage.local.get("user");
     if (user) {
+      user.video_orientation     = updated.video_orientation;
       user.video_band_color      = updated.video_band_color;
       user.video_top_text_mode   = updated.video_top_text_mode;
       user.video_top_custom_text = updated.video_top_custom_text;
@@ -3139,6 +3145,14 @@ function openReelModal(job) {
   const videoEl = document.getElementById('reelVideoPreview');
   if (videoEl) {
     videoEl.src = job.result_url || '';
+  }
+
+  // Horizontal (16:9) videos still post as Reels, but Facebook Reels are
+  // vertical — warn (per-video, from the job's stored orientation).
+  const orientationWarning = document.getElementById('reelOrientationWarning');
+  if (orientationWarning) {
+    orientationWarning.style.display =
+      job.video_orientation === 'horizontal' ? 'block' : 'none';
   }
 
   // Reset theme buttons (scoped to this modal)
